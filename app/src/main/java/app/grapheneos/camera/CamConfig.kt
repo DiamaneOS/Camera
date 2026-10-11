@@ -22,6 +22,7 @@ import androidx.camera.camera2.interop.Camera2CameraInfo
 import androidx.camera.camera2.interop.ExperimentalCamera2Interop
 import androidx.camera.core.AspectRatio
 import androidx.camera.core.Camera
+import androidx.camera.core.CameraFilter
 import androidx.camera.core.CameraInfo
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
@@ -212,6 +213,33 @@ class CamConfig(private val mActivity: MainActivity) {
         val REAR_CAMERA_SELECTOR = CameraSelector.Builder()
             .requireLensFacing(CameraSelector.LENS_FACING_BACK)
             .build()
+
+        // Narrows the cameras down to the one that can zoom out the furthest below 1x, which is
+        // how a camera combining several lenses offers the wider ones. The cameras are listed in
+        // the order of their IDs and the first of several equal ones is kept. Where no camera
+        // can zoom out the list is returned as it is, so that the default camera stays in use.
+        private val ZOOM_OUT_CAMERA_FILTER = CameraFilter { cameraInfos ->
+            val widest = cameraInfos.minByOrNull { minZoomRatio(it) }
+            if (widest != null && minZoomRatio(widest) < 1f) {
+                arrayListOf(widest)
+            } else {
+                ArrayList(cameraInfos)
+            }
+        }
+
+        @androidx.annotation.OptIn(ExperimentalCamera2Interop::class)
+        private fun minZoomRatio(cameraInfo: CameraInfo): Float {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return 1f
+
+            return try {
+                Camera2CameraInfo.from(cameraInfo).getCameraCharacteristic(
+                    CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE
+                )?.lower ?: 1f
+            } catch (exception: IllegalArgumentException) {
+                Log.w(TAG, "Camera info carries no camera2 characteristics", exception)
+                1f
+            }
+        }
 
         // Whether a vendor extension is usable, keyed by lens facing and extension mode (see
         // probeExtension). A verdict describes the device rather than any one activity and costs
@@ -1265,6 +1293,32 @@ class CamConfig(private val mActivity: MainActivity) {
         return (queryVersion ?: 0) >= Build.VERSION_CODES.VANILLA_ICE_CREAM
     }
 
+    // The stored video quality was chosen on the camera that the lens facing had at the time,
+    // which is not necessarily the current one. Asking for a quality that the current camera
+    // doesn't offer fails the whole bind, so the default takes its place there. The stored choice
+    // is left alone.
+    private fun supportedVideoQuality(): Quality {
+        val quality = videoQuality
+        if (quality == Quality.HIGHEST) return quality
+
+        val cameraInfo = try {
+            cameraProvider?.getCameraInfo(cameraSelector) ?: return quality
+        } catch (exception: IllegalArgumentException) {
+            Log.w(TAG, "Unable to resolve camera info for quality lookup", exception)
+            return quality
+        }
+
+        val supportedQualities = Recorder.getVideoCapabilities(cameraInfo)
+            .getSupportedQualities(DynamicRange.SDR)
+
+        return if (supportedQualities.isEmpty() || quality in supportedQualities) {
+            quality
+        } else {
+            Log.w(TAG, "Video quality $quality isn't offered by this camera, using the default")
+            SettingValues.Default.VIDEO_QUALITY
+        }
+    }
+
     // Maps the user-chosen video quality to the equivalent groupable feature, for use when a
     // feature group is passed to SessionConfig (see startCamera). Quality.HIGHEST has no
     // groupable equivalent and is resolved to the highest quality the current camera supports,
@@ -1366,6 +1420,21 @@ class CamConfig(private val mActivity: MainActivity) {
         }
     }
 
+    // Outside the extension modes the rear camera is the one that can zoom out to the wider
+    // lenses, if there is one. The extension modes stay on the default camera of a lens facing,
+    // which is commonly the only one that vendors offer their extensions for.
+    private fun createCameraSelector(lensFacing: Int): CameraSelector {
+        val builder = CameraSelector.Builder().requireLensFacing(lensFacing)
+
+        if (lensFacing == CameraSelector.LENS_FACING_BACK &&
+            currentMode.extensionMode == ExtensionMode.NONE
+        ) {
+            builder.addCameraFilter(ZOOM_OUT_CAMERA_FILTER)
+        }
+
+        return builder.build()
+    }
+
     private fun isLensFacingSupported(lensFacing : Int) : Boolean {
         var tCameraSelector = CameraSelector.Builder()
             .requireLensFacing(lensFacing)
@@ -1426,9 +1495,7 @@ class CamConfig(private val mActivity: MainActivity) {
         }
 
 
-        cameraSelector = CameraSelector.Builder()
-            .requireLensFacing(lensFacing)
-            .build()
+        cameraSelector = createCameraSelector(lensFacing)
 
         val builder = ImageCapture.Builder()
 
@@ -1500,15 +1567,13 @@ class CamConfig(private val mActivity: MainActivity) {
             mActivity.startFocusTimer()
             iAnalyzer = mIAnalyzer
             mIAnalyzer.setAnalyzer(cameraExecutor, analyzer)
-            cameraSelector = CameraSelector.Builder()
-                .requireLensFacing(
-                    if (isLensFacingSupported(CameraSelector.LENS_FACING_BACK)) {
-                        CameraSelector.LENS_FACING_BACK
-                    } else {
-                        mActivity.showMessage(R.string.qr_rear_camera_unavailable)
-                        CameraSelector.LENS_FACING_FRONT
-                    })
-                .build()
+            cameraSelector = createCameraSelector(
+                if (isLensFacingSupported(CameraSelector.LENS_FACING_BACK)) {
+                    CameraSelector.LENS_FACING_BACK
+                } else {
+                    mActivity.showMessage(R.string.qr_rear_camera_unavailable)
+                    CameraSelector.LENS_FACING_FRONT
+                })
             useCasesList.add(mIAnalyzer)
 
         } else {
@@ -1529,7 +1594,7 @@ class CamConfig(private val mActivity: MainActivity) {
                 recorderBuilder.setMuxerFactory { MediaMuxerImpl() }
 
                 if (!usesFeatureGroup) {
-                    recorderBuilder.setQualitySelector(QualitySelector.from(videoQuality))
+                    recorderBuilder.setQualitySelector(QualitySelector.from(supportedVideoQuality()))
                 }
 
                 val videoCaptureBuilder = VideoCapture.Builder(recorderBuilder.build())
