@@ -340,6 +340,7 @@ class VideoCapturer(private val mActivity: MainActivity) {
         animateCaptureButtonCorners(dp16, dp8)
 
         mActivity.settingsDialog.videoQualitySpinner.isEnabled = false
+        mActivity.settingsDialog.videoFrameRateSpinner.isEnabled = false
         mActivity.settingsDialog.enableEISToggle.isEnabled = false
 
         // The user may have paused before the recording actually started.
@@ -416,6 +417,7 @@ class VideoCapturer(private val mActivity: MainActivity) {
         mActivity.muteToggle.visibility = View.GONE
 
         isRecording = false
+        mActivity.settingsDialog.reloadFrameRates()
 
         mActivity.forceUpdateOrientationSensor()
     }

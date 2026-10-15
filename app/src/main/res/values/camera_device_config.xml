@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Device trees can override these through the CameraDeviceConfig overlayable. -->
+
+    <!-- Largest short edge of the photo and QR preview in pixels. 0 means no limit. -->
+    <integer name="config_camera_preview_max_short_edge">0</integer>
+
+    <!-- Default for Prioritize Capture Quality until the user changes it. -->
+    <bool name="config_camera_prefer_capture_quality">false</bool>
+</resources>
