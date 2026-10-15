@@ -8,7 +8,12 @@ data class VideoFrameRate(val lower: Int, val upper: Int) {
 
     fun preferenceValue(): String = "$lower:$upper"
 
+    /** A fixed high-speed rate, recorded in a constrained high-speed session as slow motion. */
+    val isSlowMotion: Boolean get() = lower == upper && upper >= SLOW_MOTION_MIN
+
     companion object {
+        const val SLOW_MOTION_MIN = 120
+
         fun fromPreference(value: String?): VideoFrameRate? {
             val parts = value?.split(':') ?: return null
             if (parts.size != 2) return null

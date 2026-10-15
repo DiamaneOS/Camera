@@ -7,6 +7,8 @@ import android.hardware.camera2.CameraCharacteristics
 import android.net.Uri
 import android.os.Build
 import android.provider.MediaStore
+import android.media.MediaCodecList
+import android.media.MediaFormat
 import android.util.Log
 import android.util.Range
 import android.util.Size
@@ -43,6 +45,7 @@ import androidx.camera.extensions.ExtensionsManager
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.core.DynamicRange
 import androidx.camera.video.GroupableFeatures
+import androidx.camera.video.HighSpeedVideoSessionConfig
 import androidx.camera.video.Quality
 import androidx.camera.video.QualitySelector
 import androidx.camera.video.Recorder
@@ -434,6 +437,8 @@ class CamConfig(private val mActivity: MainActivity) {
     var availableVideoFrameRates: List<VideoFrameRate> = emptyList()
         private set
     var selectedVideoFrameRate: VideoFrameRate? = null
+        private set
+    var slowMotionVideoFrameRates: List<VideoFrameRate> = emptyList()
         private set
     private var videoFrameRatePreferenceKey: String? = null
     private var lastUnavailableFrameRate: Pair<String, String>? = null
@@ -1397,6 +1402,94 @@ class CamConfig(private val mActivity: MainActivity) {
         val frameRates: Set<VideoFrameRate>,
     )
 
+    // A saved frame rate belongs to one camera and resolved recording quality.
+    private fun videoFrameRateKey(cameraInfo: CameraInfo): Pair<String, Quality?> {
+        val qualities = Recorder.getVideoCapabilities(cameraInfo).getSupportedQualities(DynamicRange.SDR)
+        val requestedQuality = supportedVideoQuality()
+        val quality = if (requestedQuality == Quality.HIGHEST) qualities.firstOrNull() else requestedQuality
+        val cameraId = Camera2CameraInfo.from(cameraInfo).cameraId
+        return "video_frame_rate/$cameraId/${videoQualityPreference(quality ?: Quality.HIGHEST)}" to quality
+    }
+
+    // Fixed high-speed rates (120 fps and up) the camera offers at this quality, recorded as slow
+    // motion. Cameras without a high-speed profile for the quality offer none.
+    private fun slowMotionFrameRates(cameraInfo: CameraInfo, quality: Quality): List<VideoFrameRate> {
+        val capabilities = Recorder.getHighSpeedVideoCapabilities(cameraInfo) ?: return emptyList()
+        if (quality !in capabilities.getSupportedQualities(DynamicRange.SDR)) return emptyList()
+        val probe = HighSpeedVideoSessionConfig(
+            VideoCapture.withOutput(
+                Recorder.Builder().setQualitySelector(QualitySelector.from(quality)).build()
+            ),
+            Preview.Builder().build(),
+        )
+        // The camera can advertise rates the hardware encoder cannot take at this size.
+        val size = QualitySelector.getResolution(cameraInfo, quality)
+        return try {
+            cameraInfo.getSupportedFrameRateRanges(probe)
+                .filter { it.lower == it.upper && it.upper >= VideoFrameRate.SLOW_MOTION_MIN }
+                .filter { size != null && hardwareEncoderSupports(size, it.upper) }
+                .map { VideoFrameRate(it.lower, it.upper) }
+                .distinct().sortedBy { it.upper }
+        } catch (exception: IllegalArgumentException) {
+            Log.w(TAG, "High-speed recording cannot be queried", exception)
+            emptyList()
+        } catch (exception: UnsupportedOperationException) {
+            Log.w(TAG, "High-speed recording cannot be queried", exception)
+            emptyList()
+        }
+    }
+
+    private fun hardwareEncoderSupports(size: Size, fps: Int): Boolean =
+        MediaCodecList(MediaCodecList.REGULAR_CODECS).codecInfos.any { info ->
+            info.isEncoder && info.isHardwareAccelerated &&
+                MediaFormat.MIMETYPE_VIDEO_AVC in info.supportedTypes &&
+                info.getCapabilitiesForType(MediaFormat.MIMETYPE_VIDEO_AVC).videoCapabilities
+                    ?.areSizeAndRateSupported(size.width, size.height, fps.toDouble()) == true
+        }
+
+    // The saved rate when it is a slow-motion rate this camera and quality still offer.
+    private fun savedSlowMotionRate(): VideoFrameRate? {
+        val cameraInfo = try {
+            cameraProvider?.getCameraInfo(cameraSelector) ?: return null
+        } catch (exception: IllegalArgumentException) {
+            return null
+        }
+        val (key, quality) = videoFrameRateKey(cameraInfo)
+        val saved = VideoFrameRate.fromPreference(commonPref.getString(key, null)) ?: return null
+        if (!saved.isSlowMotion || quality == null) return null
+        return saved.takeIf { it in slowMotionFrameRates(cameraInfo, quality) }
+    }
+
+    // Slow motion binds a constrained high-speed session: video and preview only, encoded for
+    // slowed playback. The regular rates stay listed so the user can leave slow motion.
+    private fun slowMotionSessionConfig(rate: VideoFrameRate): SessionConfig {
+        val cameraInfo = cameraProvider!!.getCameraInfo(cameraSelector)
+        val (key, quality) = videoFrameRateKey(cameraInfo)
+        videoFrameRatePreferenceKey = key
+        val probe = SessionConfig(useCases = listOf(
+            VideoCapture.withOutput(
+                Recorder.Builder().setQualitySelector(QualitySelector.from(quality!!)).build()
+            ),
+            Preview.Builder().build(),
+        ))
+        val regular = try {
+            cameraInfo.getSupportedFrameRateRanges(probe)
+                .filter { it.lower > 0 && it.upper >= it.lower }
+                .map { VideoFrameRate(it.lower, it.upper) }.toSet()
+        } catch (exception: IllegalArgumentException) {
+            emptySet()
+        } catch (exception: UnsupportedOperationException) {
+            emptySet()
+        }
+        slowMotionVideoFrameRates = slowMotionFrameRates(cameraInfo, quality)
+        availableVideoFrameRates = VideoFrameRate.supportedOptions(listOf(regular)) + slowMotionVideoFrameRates
+        selectedVideoFrameRate = rate
+        lastUnavailableFrameRate = null
+        return HighSpeedVideoSessionConfig(
+            videoCapture!!, preview, Range(rate.lower, rate.upper), isSlowMotionEnabled = true
+        )
+    }
+
     /** Query the actual recording resolution/stream combination, never the camera-wide AE list. */
     private fun videoSessionConfig(
         useCases: List<UseCase>,
@@ -1404,11 +1497,7 @@ class CamConfig(private val mActivity: MainActivity) {
         qualityFeature: GroupableFeature?,
     ): SessionConfig {
         val cameraInfo = cameraProvider!!.getCameraInfo(cameraSelector)
-        val qualities = Recorder.getVideoCapabilities(cameraInfo).getSupportedQualities(DynamicRange.SDR)
-        val requestedQuality = supportedVideoQuality()
-        val quality = if (requestedQuality == Quality.HIGHEST) qualities.firstOrNull() else requestedQuality
-        val cameraId = Camera2CameraInfo.from(cameraInfo).cameraId
-        val key = "video_frame_rate/$cameraId/${videoQualityPreference(quality ?: Quality.HIGHEST)}"
+        val (key, quality) = videoFrameRateKey(cameraInfo)
         videoFrameRatePreferenceKey = key
 
         val baseFeatures = if (preferredFeatures.isNotEmpty() && qualityFeature != null) {
@@ -1444,10 +1533,12 @@ class CamConfig(private val mActivity: MainActivity) {
             }
         }
 
-        availableVideoFrameRates = VideoFrameRate.supportedOptions(profiles.map { it.frameRates })
+        val regular = VideoFrameRate.supportedOptions(profiles.map { it.frameRates })
+        slowMotionVideoFrameRates = quality?.let { slowMotionFrameRates(cameraInfo, it) } ?: emptyList()
+        availableVideoFrameRates = regular + slowMotionVideoFrameRates
         val stored = commonPref.getString(key, null)
         val requested = VideoFrameRate.fromPreference(stored)
-        selectedVideoFrameRate = requested?.takeIf { it in availableVideoFrameRates }
+        selectedVideoFrameRate = requested?.takeIf { it in regular }
         if (stored != null && selectedVideoFrameRate == null) {
             val unavailable = key to stored
             if (lastUnavailableFrameRate != unavailable) {
@@ -1588,6 +1679,7 @@ class CamConfig(private val mActivity: MainActivity) {
         mActivity.imageCapturer.cancelPendingCaptureRequest()
         availableVideoFrameRates = emptyList()
         selectedVideoFrameRate = null
+        slowMotionVideoFrameRates = emptyList()
         videoFrameRatePreferenceKey = null
 
         mActivity.exposureBar.hidePanel()
@@ -1672,7 +1764,9 @@ class CamConfig(private val mActivity: MainActivity) {
         // supports no stabilization at all has nothing to negotiate: it takes the plain fallback
         // path directly, which produces the identical output without a needless feature-group
         // round.
-        val usesFeatureGroup = isVideoMode && enableEIS && canApplyVideoStabilization()
+        // Slow motion is a constrained high-speed session: no stabilization, snapshots or mirroring.
+        val slowMotion = if (isVideoMode && appliedExtension == null) savedSlowMotionRate() else null
+        val usesFeatureGroup = isVideoMode && slowMotion == null && enableEIS && canApplyVideoStabilization()
         val videoQualityFeature: GroupableFeature? = when {
             usesFeatureGroup -> videoQualityAsGroupableFeature()
             else -> null
@@ -1719,7 +1813,10 @@ class CamConfig(private val mActivity: MainActivity) {
                 // package, so this has to be re-checked on every camera-video upgrade.
                 recorderBuilder.setMuxerFactory { MediaMuxerImpl() }
 
-                if (!usesFeatureGroup) {
+                if (slowMotion != null) {
+                    val quality = videoFrameRateKey(cameraProvider!!.getCameraInfo(cameraSelector)).second
+                    recorderBuilder.setQualitySelector(QualitySelector.from(quality!!))
+                } else if (!usesFeatureGroup) {
                     recorderBuilder.setQualitySelector(QualitySelector.from(supportedVideoQuality()))
                 }
 
@@ -1736,7 +1833,7 @@ class CamConfig(private val mActivity: MainActivity) {
                 // pre-1.6 setters, restricted to the qualities that permit them -- is a separate
                 // change that needs a device the feature group cannot serve to test on.
 
-                if (mActivity.camConfig.saveVideoAsPreviewed) {
+                if (mActivity.camConfig.saveVideoAsPreviewed && slowMotion == null) {
                     videoCaptureBuilder.setMirrorMode(MirrorMode.MIRROR_MODE_ON_FRONT_ONLY)
                 }
 
@@ -1745,7 +1842,9 @@ class CamConfig(private val mActivity: MainActivity) {
                 useCasesList.add(videoCapture!!)
             }
 
-            if (!mActivity.requiresVideoModeOnly) {
+            if (slowMotion != null) {
+                imageCapture = null
+            } else if (!mActivity.requiresVideoModeOnly) {
                 imageCapture = builder.let {
                     val captureMode = PhotoCapturePolicy.captureMode(
                         preferQuality = prioritizeCaptureQuality,
@@ -1809,9 +1908,10 @@ class CamConfig(private val mActivity: MainActivity) {
                 preview?.targetRotation
                     ?: rotation
             )
-            .setResolutionSelector(
-                previewResolution.build()
-            )
+        // A high-speed preview takes the recording's size and may not choose its own.
+        if (slowMotion == null) {
+            previewBuilder.setResolutionSelector(previewResolution.build())
+        }
 
         // Pixels and potentially other devices enable EIS by default, which reduces the field of
         // view and image quality for image capture if it's not explicitly disabled.
@@ -1823,7 +1923,7 @@ class CamConfig(private val mActivity: MainActivity) {
         // group (see the VideoCapture builder above), and leaving it unset would let a device
         // default preview stabilization cost photo capture its field of view.
         when {
-            usesFeatureGroup -> {}
+            usesFeatureGroup || slowMotion != null -> {}
 
             else -> previewBuilder.setPreviewStabilizationEnabled(false)
         }
@@ -1918,12 +2018,11 @@ class CamConfig(private val mActivity: MainActivity) {
         }
 
         try {
-            val sessionConfig = if (isVideoMode) videoSessionConfig(
-                useCasesList, preferredFeatures, videoQualityFeature
-            ) else SessionConfig(
-                useCases = useCasesList,
-                preferredFeatureGroup = preferredFeatures
-            )
+            val sessionConfig = when {
+                slowMotion != null -> slowMotionSessionConfig(slowMotion)
+                isVideoMode -> videoSessionConfig(useCasesList, preferredFeatures, videoQualityFeature)
+                else -> SessionConfig(useCases = useCasesList, preferredFeatureGroup = preferredFeatures)
+            }
 
             if (sessionConfig.preferredFeatureGroup.isNotEmpty()) {
                 val requested = preferredFeatures.toList()

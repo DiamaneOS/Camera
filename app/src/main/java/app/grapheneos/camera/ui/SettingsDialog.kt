@@ -935,6 +935,8 @@ class SettingsDialog(val mActivity: MainActivity, themedContext: Context) :
         val labels = frameRateChoices.map { rate ->
             when {
                 rate == null -> getString(R.string.video_frame_rate_auto)
+                rate in camConfig.slowMotionVideoFrameRates ->
+                    mActivity.getString(R.string.video_frame_rate_slow_motion, rate.upper)
                 rate.lower == rate.upper -> mActivity.getString(R.string.video_frame_rate_fixed, rate.lower)
                 else -> mActivity.getString(R.string.video_frame_rate_range, rate.lower, rate.upper)
             }

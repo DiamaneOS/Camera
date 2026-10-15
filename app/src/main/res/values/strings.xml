@@ -58,6 +58,7 @@
     <string name="video_frame_rate_auto">Auto</string>
     <string name="video_frame_rate_fixed">%1$d fps</string>
     <string name="video_frame_rate_range">%1$d–%2$d fps</string>
+    <string name="video_frame_rate_slow_motion">%1$d fps slow motion</string>
     <string name="video_frame_rate_unavailable">The saved frame rate is unavailable for this camera and resolution. Using Auto.</string>
     <string name="optimize_for">Optimize for</string>
     <string name="quality">Quality</string>

@@ -1,6 +1,8 @@
 package app.grapheneos.camera.capturer
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Assert.assertNull
 import org.junit.Test
 
@@ -48,5 +50,12 @@ class VideoFrameRateTest {
         assertEquals(listOf(fps30, VideoFrameRate(15, 30), fps60),
             VideoFrameRate.supportedOptions(listOf(setOf(fps60, fps30), setOf(fps30, VideoFrameRate(15, 30)))))
         assertNull(VideoFrameRate.selectProfile(emptyList(), null))
+    }
+
+    @Test fun onlyFixedHighSpeedRatesAreSlowMotion() {
+        assertTrue(VideoFrameRate(120, 120).isSlowMotion)
+        assertTrue(VideoFrameRate(240, 240).isSlowMotion)
+        assertFalse(fps60.isSlowMotion)
+        assertFalse(VideoFrameRate(30, 120).isSlowMotion)
     }
 }
