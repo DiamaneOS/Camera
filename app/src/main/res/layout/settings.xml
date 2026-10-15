@@ -217,6 +217,29 @@
                     </LinearLayout>
 
                     <LinearLayout
+                        android:id="@+id/video_frame_rate_setting"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:minHeight="@dimen/settings_dialog_menu_item_height"
+                        android:paddingVertical="@dimen/settings_dialog_menu_item_vertical"
+                        android:paddingHorizontal="@dimen/settings_dialog_menu_item_horizontal"
+                        android:gravity="center_vertical"
+                        android:orientation="horizontal">
+
+                        <TextView
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:labelFor="@id/video_frame_rate_spinner"
+                            android:text="@string/video_frame_rate" />
+
+                        <Spinner
+                            android:id="@+id/video_frame_rate_spinner"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content" />
+                    </LinearLayout>
+
+                    <LinearLayout
                         android:id="@+id/include_audio_setting"
                         android:layout_width="match_parent"
                         android:layout_height="@dimen/settings_dialog_menu_item_height"
@@ -294,13 +317,15 @@
 
                         <TextView
                             android:layout_height="wrap_content"
-                            android:layout_width="wrap_content"
+                            android:layout_width="0dp"
                             android:layout_gravity="center_vertical"
+                            android:layout_weight="1"
+                            android:labelFor="@id/wait_for_focus_lock_switch"
                             android:text="@string/wait_for_focus_lock"/>
 
                         <LinearLayout
                             android:id="@+id/wait_for_focus_lock_container"
-                            android:layout_width="match_parent"
+                            android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
                             android:gravity="end|center_vertical">
 

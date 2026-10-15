@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <overlayable name="CameraDeviceConfig">
+        <policy type="vendor">
+            <item type="integer" name="config_camera_preview_max_short_edge" />
+            <item type="bool" name="config_camera_prefer_capture_quality" />
+        </policy>
+    </overlayable>
+</resources>

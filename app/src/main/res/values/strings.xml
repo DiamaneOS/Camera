@@ -52,7 +52,13 @@
     <string name="aspect_ratio">Aspect Ratio</string>
     <string name="include_audio">Include Audio</string>
     <string name="enable_eis">Enable EIS</string>
-    <string name="video_quality">Video Quality</string>
+    <string name="video_quality">Video Resolution</string>
+    <string name="video_quality_uhd">4K (2160p)</string>
+    <string name="video_frame_rate">Frame Rate</string>
+    <string name="video_frame_rate_auto">Auto</string>
+    <string name="video_frame_rate_fixed">%1$d fps</string>
+    <string name="video_frame_rate_range">%1$d–%2$d fps</string>
+    <string name="video_frame_rate_unavailable">The saved frame rate is unavailable for this camera and resolution. Using Auto.</string>
     <string name="optimize_for">Optimize for</string>
     <string name="quality">Quality</string>
     <string name="latency">Latency</string>
@@ -105,8 +111,8 @@
     <string name="storage_location">Storage Location</string>
     <string name="revert_back_to_dcim">Revert back to DCIM</string>
 
-    <string name="image_quality">Image Quality</string>
-    <string name="image_quality_desc" formatted="false">Adjust the quality of an image captured by the app from 1% to 100%.</string>
+    <string name="image_quality">JPEG Quality</string>
+    <string name="image_quality_desc" formatted="false">Set JPEG compression quality from 1% to 100%. Higher values preserve more detail and use more storage.</string>
     <string name="photo">Photo</string>
     <string name="remove_exif_title">Remove EXIF data after capture</string>
     <string name="remove_exif_subtitle">Note: Geo-tagging/Location option is independent of this setting</string>
@@ -220,7 +226,7 @@
     <string name="main_storage">Main storage</string>
 
     <string name="zsl_setting_title">Enable Zero Shutter Lag</string>
-    <string name="zsl_setting_desc">Uses Zero Shutter Lag (ZSL) for faster image capture. Ignores wait for focus setting. Certain devices may have a buggy implementation for this.</string>
+    <string name="zsl_setting_desc">Uses recent frames for faster capture when supported, taking priority over capture quality. Unavailable with flash, extension modes or video snapshots.</string>
     <string name="audio_permission_failed_in_recording">Unable to request for audio permission in between a recording</string>
 
     <string name="tap_to_mute_audio">Tap to mute audio</string>
@@ -232,6 +238,6 @@
     <string name="highest_res_setting">Use highest photo resolution</string>
     <string name="highest_res_setting_desc">Enable using the highest supported resolution for images instead of the default. This can lead to very large images on certain devices.</string>
 
-    <string name="wait_for_focus_lock">Wait for Focus Lock</string>
+    <string name="wait_for_focus_lock">Prioritize Capture Quality</string>
     <string name="invalid_photo_quality_value">Invalid value set for photo quality</string>
 </resources>

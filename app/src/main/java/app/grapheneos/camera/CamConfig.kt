@@ -8,6 +8,7 @@ import android.net.Uri
 import android.os.Build
 import android.provider.MediaStore
 import android.util.Log
+import android.util.Range
 import android.util.Size
 import android.view.MotionEvent
 import android.view.View
@@ -51,6 +52,8 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.LiveData
 import androidx.lifecycle.Observer
 import app.grapheneos.camera.analyzer.QRAnalyzer
+import app.grapheneos.camera.capturer.PhotoCapturePolicy
+import app.grapheneos.camera.capturer.VideoFrameRate
 import app.grapheneos.camera.ktx.applyPreviewRatio
 import app.grapheneos.camera.ui.activities.CaptureActivity
 import app.grapheneos.camera.ui.activities.MainActivity
@@ -127,7 +130,9 @@ class CamConfig(private val mActivity: MainActivity) {
 
             const val SELECT_HIGHEST_RESOLUTION = "select_highest_resolution"
 
+            // Legacy name: this setting selected CameraX's capture processing mode.
             const val WAIT_FOR_FOCUS_LOCK = "wait_for_focus_lock"
+            const val PRIORITIZE_CAPTURE_QUALITY = "prioritize_capture_quality"
 
             const val SELF_TIMER_DURATION = "self_timer_duration"
         }
@@ -172,8 +177,6 @@ class CamConfig(private val mActivity: MainActivity) {
             const val ENABLE_ZSL = false
 
             const val SELECT_HIGHEST_RESOLUTION = false
-
-            const val WAIT_FOR_FOCUS_LOCK = false
 
             const val SELF_TIMER_DURATION = 0
         }
@@ -401,22 +404,50 @@ class CamConfig(private val mActivity: MainActivity) {
     var videoQuality: Quality = SettingValues.Default.VIDEO_QUALITY
         get() {
             return if (modePref.contains(videoQualityKey)) {
-                mActivity.settingsDialog.titleToQuality(
-                    modePref.getString(videoQualityKey, "")!!
-                )
+                when (modePref.getString(videoQualityKey, "")) {
+                    "UHD", "2160p (UHD)", "4K (2160p)" -> Quality.UHD
+                    "FHD", "1080p (FHD)" -> Quality.FHD
+                    "HD", "720p (HD)" -> Quality.HD
+                    "SD", "480p (SD)" -> Quality.SD
+                    else -> SettingValues.Default.VIDEO_QUALITY
+                }
             } else {
                 SettingValues.Default.VIDEO_QUALITY
             }
         }
         set(value) {
-            val option = mActivity.settingsDialog.videoQualitySpinner.selectedItem as String
-
             modePref.edit {
-                putString(videoQualityKey, option)
+                putString(videoQualityKey, videoQualityPreference(value))
             }
 
             field = value
         }
+
+    private fun videoQualityPreference(quality: Quality): String = when (quality) {
+        Quality.UHD -> "UHD"
+        Quality.FHD -> "FHD"
+        Quality.HD -> "HD"
+        Quality.SD -> "SD"
+        else -> "HIGHEST"
+    }
+
+    var availableVideoFrameRates: List<VideoFrameRate> = emptyList()
+        private set
+    var selectedVideoFrameRate: VideoFrameRate? = null
+        private set
+    private var videoFrameRatePreferenceKey: String? = null
+    private var lastUnavailableFrameRate: Pair<String, String>? = null
+
+    fun setVideoFrameRate(rate: VideoFrameRate?) {
+        if (mActivity.videoCapturer.isRecording) return
+        val key = videoFrameRatePreferenceKey ?: return
+        if (rate != null && rate !in availableVideoFrameRates) return
+        if (rate == selectedVideoFrameRate) return
+        commonPref.edit {
+            if (rate == null) remove(key) else putString(key, rate.preferenceValue())
+        }
+        startCamera(true)
+    }
 
     private val videoQualityKey: String
         get() {
@@ -971,16 +1002,22 @@ class CamConfig(private val mActivity: MainActivity) {
         qrAnalyzer?.refreshHints()
     }
 
-    var waitForFocusLock: Boolean
+    var prioritizeCaptureQuality: Boolean
         get() {
-            return commonPref.getBoolean(
-                SettingValues.Key.WAIT_FOR_FOCUS_LOCK,
-                SettingValues.Default.WAIT_FOR_FOCUS_LOCK
+            fun read(key: String): Boolean? = if (commonPref.contains(key)) {
+                commonPref.getBoolean(key, false)
+            } else {
+                null
+            }
+            return PhotoCapturePolicy.preferQuality(
+                read(SettingValues.Key.PRIORITIZE_CAPTURE_QUALITY),
+                read(SettingValues.Key.WAIT_FOR_FOCUS_LOCK),
+                mActivity.resources.getBoolean(R.bool.config_camera_prefer_capture_quality)
             )
         }
         set(value) {
             commonPref.edit {
-                putBoolean(SettingValues.Key.WAIT_FOR_FOCUS_LOCK, value)
+                putBoolean(SettingValues.Key.PRIORITIZE_CAPTURE_QUALITY, value)
             }
         }
 
@@ -1324,7 +1361,8 @@ class CamConfig(private val mActivity: MainActivity) {
     // groupable equivalent and is resolved to the highest quality the current camera supports,
     // mirroring what QualitySelector.from(Quality.HIGHEST) would have selected.
     private fun videoQualityAsGroupableFeature(): GroupableFeature? {
-        val quality = if (videoQuality == Quality.HIGHEST) {
+        val supportedQuality = supportedVideoQuality()
+        val quality = if (supportedQuality == Quality.HIGHEST) {
             val cameraInfo = try {
                 cameraProvider?.getCameraInfo(cameraSelector) ?: return null
             } catch (exception: IllegalArgumentException) {
@@ -1335,7 +1373,7 @@ class CamConfig(private val mActivity: MainActivity) {
                 .getSupportedQualities(DynamicRange.SDR)
                 .firstOrNull() ?: return null
         } else {
-            videoQuality
+            supportedQuality
         }
 
         return when (quality) {
@@ -1351,6 +1389,91 @@ class CamConfig(private val mActivity: MainActivity) {
                 null
             }
         }
+    }
+
+    private data class VideoSessionProfile(
+        val useCases: List<UseCase>,
+        val features: Set<GroupableFeature>,
+        val frameRates: Set<VideoFrameRate>,
+    )
+
+    /** Query the actual recording resolution/stream combination, never the camera-wide AE list. */
+    private fun videoSessionConfig(
+        useCases: List<UseCase>,
+        preferredFeatures: List<GroupableFeature>,
+        qualityFeature: GroupableFeature?,
+    ): SessionConfig {
+        val cameraInfo = cameraProvider!!.getCameraInfo(cameraSelector)
+        val qualities = Recorder.getVideoCapabilities(cameraInfo).getSupportedQualities(DynamicRange.SDR)
+        val requestedQuality = supportedVideoQuality()
+        val quality = if (requestedQuality == Quality.HIGHEST) qualities.firstOrNull() else requestedQuality
+        val cameraId = Camera2CameraInfo.from(cameraInfo).cameraId
+        val key = "video_frame_rate/$cameraId/${videoQualityPreference(quality ?: Quality.HIGHEST)}"
+        videoFrameRatePreferenceKey = key
+
+        val baseFeatures = if (preferredFeatures.isNotEmpty() && qualityFeature != null) {
+            setOf(qualityFeature)
+        } else {
+            emptySet()
+        }
+        val featureSets = if (preferredFeatures.isNotEmpty()) {
+            listOf(baseFeatures + GroupableFeature.PREVIEW_STABILIZATION,
+                baseFeatures + GroupableFeatures.VIDEO_STABILIZATION, baseFeatures)
+        } else {
+            listOf(emptySet())
+        }
+        // A still-photo stream must not hide an otherwise supported recording FPS. Keep snapshots
+        // when compatible. The explicit resolution/FPS and then stabilization take precedence.
+        val withoutSnapshot = useCases.filterNot { it is ImageCapture }
+        val streamSets = listOf(useCases, withoutSnapshot).distinct()
+        val profiles = arrayListOf<VideoSessionProfile>()
+        for (features in featureSets) {
+            for (streams in streamSets) {
+                val probe = SessionConfig(useCases = streams, requiredFeatureGroup = features)
+                try {
+                    if (features.isNotEmpty() && !cameraInfo.isSessionConfigSupported(probe)) continue
+                    val ranges = cameraInfo.getSupportedFrameRateRanges(probe)
+                        .filter { it.lower > 0 && it.upper >= it.lower }
+                        .map { VideoFrameRate(it.lower, it.upper) }.toSet()
+                    if (ranges.isNotEmpty()) profiles.add(VideoSessionProfile(streams, features, ranges))
+                } catch (exception: IllegalArgumentException) {
+                    Log.w(TAG, "Recording session cannot be queried", exception)
+                } catch (exception: UnsupportedOperationException) {
+                    Log.w(TAG, "Recording FPS query is unavailable", exception)
+                }
+            }
+        }
+
+        availableVideoFrameRates = VideoFrameRate.supportedOptions(profiles.map { it.frameRates })
+        val stored = commonPref.getString(key, null)
+        val requested = VideoFrameRate.fromPreference(stored)
+        selectedVideoFrameRate = requested?.takeIf { it in availableVideoFrameRates }
+        if (stored != null && selectedVideoFrameRate == null) {
+            val unavailable = key to stored
+            if (lastUnavailableFrameRate != unavailable) {
+                mActivity.showMessage(R.string.video_frame_rate_unavailable)
+                lastUnavailableFrameRate = unavailable
+            }
+        } else {
+            lastUnavailableFrameRate = null
+        }
+
+        val index = VideoFrameRate.selectProfile(profiles.map { it.frameRates }, selectedVideoFrameRate)
+        if (index == null) {
+            // Older/limited providers may be unable to answer the constrained query. Auto keeps
+            // the existing binding path. No unverified FPS choices are exposed or requested.
+            return SessionConfig(useCases = useCases, preferredFeatureGroup = preferredFeatures)
+        }
+        val profile = profiles[index]
+        val snapshot = imageCapture
+        if (snapshot != null && snapshot !in profile.useCases) imageCapture = null
+        if (preferredFeatures.isNotEmpty()) {
+            onFeaturesSelected(lensFacing, preferredFeatures, qualityFeature, profile.features)
+        }
+        return selectedVideoFrameRate?.let {
+            SessionConfig(useCases = profile.useCases, requiredFeatureGroup = profile.features,
+                frameRateRange = Range(it.lower, it.upper))
+        } ?: SessionConfig(useCases = profile.useCases, requiredFeatureGroup = profile.features)
     }
 
     // The quality labels shown in the settings spinner, so that a message about a quality can
@@ -1463,6 +1586,9 @@ class CamConfig(private val mActivity: MainActivity) {
 
         // Cancel any pending capture requests
         mActivity.imageCapturer.cancelPendingCaptureRequest()
+        availableVideoFrameRates = emptyList()
+        selectedVideoFrameRate = null
+        videoFrameRatePreferenceKey = null
 
         mActivity.exposureBar.hidePanel()
         modePref = mActivity.getSharedPreferences(currentMode.name, Context.MODE_PRIVATE)
@@ -1621,17 +1747,18 @@ class CamConfig(private val mActivity: MainActivity) {
 
             if (!mActivity.requiresVideoModeOnly) {
                 imageCapture = builder.let {
-                    it.setCaptureMode(
-                        if (waitForFocusLock) {
-                            ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY
-                        } else {
-                            if (enableZsl) {
-                                ImageCapture.CAPTURE_MODE_ZERO_SHUTTER_LAG
-                            } else {
-                                ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY
-                            }
-                        }
+                    val captureMode = PhotoCapturePolicy.captureMode(
+                        preferQuality = prioritizeCaptureQuality,
+                        requestZsl = enableZsl,
+                        extensionEnabled = appliedExtension != null,
+                        videoSnapshot = isVideoMode,
+                        flashEnabled = flashMode != ImageCapture.FLASH_MODE_OFF,
                     )
+                    it.setCaptureMode(when (captureMode) {
+                        PhotoCapturePolicy.Mode.QUALITY -> ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY
+                        PhotoCapturePolicy.Mode.ZERO_SHUTTER_LAG -> ImageCapture.CAPTURE_MODE_ZERO_SHUTTER_LAG
+                        PhotoCapturePolicy.Mode.LATENCY -> ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY
+                    })
 
 
                     it.setTargetRotation(
@@ -1659,13 +1786,31 @@ class CamConfig(private val mActivity: MainActivity) {
             }
         }
 
+        val previewResolution = ResolutionSelector.Builder()
+            .setAspectRatioStrategy(aspectRatioStrategy)
+        val maxPreviewShortEdge = mActivity.resources.getInteger(
+            R.integer.config_camera_preview_max_short_edge
+        )
+        if (maxPreviewShortEdge > 0 && !isVideoMode && appliedExtension == null) {
+            previewResolution.setResolutionFilter { sizes, _ ->
+                val filtered = sizes.filter { minOf(it.width, it.height) <= maxPreviewShortEdge }
+                // An invalid device limit must not make an otherwise supported camera unbindable.
+                if (filtered.isEmpty()) {
+                    Log.w(TAG, "No preview resolution satisfies the device limit")
+                    sizes
+                } else {
+                    filtered
+                }
+            }
+        }
+
         val previewBuilder = Preview.Builder()
             .setTargetRotation(
                 preview?.targetRotation
                     ?: rotation
             )
             .setResolutionSelector(
-                ResolutionSelector.Builder().setAspectRatioStrategy(aspectRatioStrategy).build()
+                previewResolution.build()
             )
 
         // Pixels and potentially other devices enable EIS by default, which reduces the field of
@@ -1773,12 +1918,14 @@ class CamConfig(private val mActivity: MainActivity) {
         }
 
         try {
-            val sessionConfig = SessionConfig(
+            val sessionConfig = if (isVideoMode) videoSessionConfig(
+                useCasesList, preferredFeatures, videoQualityFeature
+            ) else SessionConfig(
                 useCases = useCasesList,
                 preferredFeatureGroup = preferredFeatures
             )
 
-            if (preferredFeatures.isNotEmpty()) {
+            if (sessionConfig.preferredFeatureGroup.isNotEmpty()) {
                 val requested = preferredFeatures.toList()
                 val boundLensFacing = lensFacing
                 sessionConfig.setFeatureSelectionListener(
@@ -1835,6 +1982,7 @@ class CamConfig(private val mActivity: MainActivity) {
         }
 
         loadTabs()
+        mActivity.settingsDialog.reloadFrameRates()
 
         // Every bind hands out a fresh LiveData in extension modes, and the old observer would
         // otherwise stay attached: after a handful of mode switches a single zoom step redrew the
