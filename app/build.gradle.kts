@@ -48,8 +48,10 @@ android {
         applicationId = "app.grapheneos.camera"
         minSdk = 29
         targetSdk = 37
-        versionCode = 93
-        versionName = versionCode.toString()
+        // DiamaneOS: upstream version x 100 + DiamaneOS revision (93.1 = 9301). Always higher than
+        // upstream's own numbers and only ever rising, as Android refuses a lower version as an update.
+        versionCode = 9301
+        versionName = "93.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
