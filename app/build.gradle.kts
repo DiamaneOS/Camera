@@ -50,8 +50,8 @@ android {
         targetSdk = 37
         // DiamaneOS: upstream version x 100 + DiamaneOS revision (93.2 = 9302). Always higher than
         // upstream's own numbers and only ever rising, as Android refuses a lower version as an update.
-        versionCode = 9302
-        versionName = "93.2"
+        versionCode = 9303
+        versionName = "93.3"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
