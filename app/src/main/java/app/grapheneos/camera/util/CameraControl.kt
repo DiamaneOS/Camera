@@ -23,7 +23,7 @@ class CameraControl(private val camConfig: CamConfig) {
             else if (currentZoomRatio < 1 && newZoomRatio > 1) 1f
             else newZoomRatio
 
-        camConfig.camera?.cameraControl?.setZoomRatio(zoomTo)
+        camConfig.setZoomRatio(zoomTo)
     }
 
 }

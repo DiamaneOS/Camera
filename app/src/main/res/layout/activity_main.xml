@@ -17,7 +17,9 @@
         <FrameLayout
             android:id="@+id/main_frame"
             android:layout_height="match_parent"
-            android:layout_width="match_parent">
+            android:layout_width="match_parent"
+            android:layout_marginBottom="24dp"
+            android:layout_above="@id/three_buttons">
 
             <androidx.constraintlayout.widget.ConstraintLayout
                 android:id="@+id/preview_container"
@@ -29,7 +31,7 @@
                     android:layout_width="0dp"
                     android:layout_height="0dp"
                     app:layout_constraintDimensionRatio="9:16"
-                    app:layout_constraintVertical_bias="0"
+                    app:layout_constraintVertical_bias="1"
                     app:layout_constraintTop_toTopOf="parent"
                     app:layout_constraintBottom_toBottomOf="parent"
                     app:layout_constraintStart_toStartOf="parent"
@@ -171,6 +173,113 @@
                     app:layout_constraintStart_toStartOf="@id/preview"
                     app:layout_constraintEnd_toEndOf="@id/preview"
                     app:layout_constraintBottom_toBottomOf="@id/preview"/>
+
+                <LinearLayout
+                    android:id="@+id/lens_controls"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginBottom="24dp"
+                    android:gravity="center"
+                    android:orientation="horizontal"
+                    android:visibility="gone"
+                    app:layout_constraintBottom_toBottomOf="@id/preview"
+                    app:layout_constraintStart_toStartOf="@id/preview"
+                    app:layout_constraintEnd_toEndOf="@id/preview">
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/lens_wide"
+                        android:layout_width="48dp"
+                        android:layout_height="48dp"
+                        android:layout_marginHorizontal="4dp"
+                        android:padding="0dp"
+                        android:checkable="true"
+                        android:insetLeft="4dp"
+                        android:insetRight="4dp"
+                        android:insetTop="4dp"
+                        android:insetBottom="4dp"
+                        android:minWidth="48dp"
+                        android:minHeight="48dp"
+                        app:cornerRadius="24dp"
+                        app:backgroundTint="@color/lens_button_background"
+                        android:textColor="@color/lens_button_text" />
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/lens_main"
+                        android:layout_width="48dp"
+                        android:layout_height="48dp"
+                        android:layout_marginHorizontal="4dp"
+                        android:padding="0dp"
+                        android:checkable="true"
+                        android:insetLeft="4dp"
+                        android:insetRight="4dp"
+                        android:insetTop="4dp"
+                        android:insetBottom="4dp"
+                        android:minWidth="48dp"
+                        android:minHeight="48dp"
+                        app:cornerRadius="24dp"
+                        app:backgroundTint="@color/lens_button_background"
+                        android:textColor="@color/lens_button_text" />
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/lens_two"
+                        android:layout_width="48dp"
+                        android:layout_height="48dp"
+                        android:layout_marginHorizontal="4dp"
+                        android:padding="0dp"
+                        android:checkable="true"
+                        android:insetLeft="4dp"
+                        android:insetRight="4dp"
+                        android:insetTop="4dp"
+                        android:insetBottom="4dp"
+                        android:minWidth="48dp"
+                        android:minHeight="48dp"
+                        app:cornerRadius="24dp"
+                        app:backgroundTint="@color/lens_button_background"
+                        android:textColor="@color/lens_button_text" />
+                </LinearLayout>
+
+                <LinearLayout
+                    android:id="@+id/computational_controls"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginBottom="96dp"
+                    android:gravity="center"
+                    android:orientation="vertical"
+                    app:layout_constraintBottom_toBottomOf="@id/preview"
+                    app:layout_constraintStart_toStartOf="@id/preview"
+                    app:layout_constraintEnd_toEndOf="@id/preview">
+                    <com.google.android.material.chip.Chip
+                        android:id="@+id/night_suggestion"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:minHeight="48dp"
+                        android:text="@string/try_night"
+                        android:checkable="false"
+                        android:visibility="gone"
+                        app:ensureMinTouchTargetSize="true"
+                        app:chipMinHeight="48dp"
+                        app:chipBackgroundColor="?attr/colorPrimary"
+                        android:textColor="?attr/colorOnPrimary"
+                        app:closeIcon="@drawable/cancel"
+                        app:closeIconVisible="true"
+                        app:closeIconTint="?attr/colorOnPrimary"
+                        app:closeIconSize="24dp"
+                        app:closeIconStartPadding="12dp"
+                        app:closeIconEndPadding="12dp" />
+                    <TextView
+                        android:id="@+id/processing_status"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:padding="8dp"
+                        android:background="#CC000000"
+                        android:textColor="@android:color/white"
+                        android:accessibilityLiveRegion="polite"
+                        android:visibility="gone" />
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/cancel_processing"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:minHeight="48dp"
+                        android:text="@android:string/cancel"
+                        android:visibility="gone" />
+                </LinearLayout>
 
             </androidx.constraintlayout.widget.ConstraintLayout>
 
@@ -349,7 +458,7 @@
                     android:id="@+id/image_preview"
                     android:layout_width="64dp"
                     android:layout_height="64dp"
-                    android:src="@drawable/circle"
+                    android:src="@drawable/gallery_placeholder"
                     android:layout_gravity="center"
                     android:scaleType="centerCrop"
                     app:shapeAppearance="@style/ShapeAppearance.Image.PILL"
@@ -478,7 +587,7 @@
             android:id="@+id/camera_mode_tabs"
             android:layout_alignParentBottom="true"
             android:layout_width="match_parent"
-            android:layout_height="30dp"
+            android:layout_height="48dp"
             app:tabPaddingStart="16dp"
             app:tabPaddingEnd="16dp"
             app:tabRippleColor="@android:color/transparent"
@@ -487,6 +596,7 @@
             app:tabIndicator="@drawable/mode_indicator"
             android:overScrollMode="never"
             app:tabIndicatorHeight="30dp"
+            app:tabIndicatorGravity="center"
             app:tabTextColor="@android:color/white"
             app:tabSelectedTextColor="?attr/colorOnPrimary"
             android:background="@android:color/transparent"
@@ -513,7 +623,9 @@
 
         <ImageButton
             android:id="@+id/settings_option"
-            android:layout_alignParentTop="true"
+            android:layout_above="@id/three_buttons"
+            android:layout_centerHorizontal="true"
+            android:layout_marginBottom="32dp"
             android:minWidth="48dp"
             android:minHeight="48dp"
             android:layout_width="wrap_content"

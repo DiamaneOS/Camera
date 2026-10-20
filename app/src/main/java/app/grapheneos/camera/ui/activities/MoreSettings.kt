@@ -236,16 +236,24 @@ open class MoreSettings : AppCompatActivity(), TextView.OnEditorActionListener {
             }
         }
 
-        val highResSetting = binding.highestResSetting
-        val highResToggle = binding.highestResSettingToggle
-        highResToggle.isChecked = camConfig.selectHighestResolution
-
-        highResToggle.setOnClickListener {
-            camConfig.selectHighestResolution = !camConfig.selectHighestResolution
+        val resolutionSetting=binding.photoResolutionSetting
+        val sizes=app.grapheneos.camera.capturer.PhotoResolutionPolicy.choices(camConfig.photoResolutions()).toMutableList()
+        camConfig.photoResolution?.takeIf {it !in sizes}?.let {sizes.add(it);sizes.sortByDescending {size->size.pixels}}
+        val choices=listOf<app.grapheneos.camera.capturer.PhotoResolution?>(null)+sizes
+        fun title(size:app.grapheneos.camera.capturer.PhotoResolution?)=size?.let {
+            getString(R.string.photo_resolution_size,it.pixels/1_000_000.0,it.width,it.height)
+        } ?: getString(R.string.photo_resolution_auto)
+        fun refreshResolution() {
+            binding.photoResolutionSettingSubtitle.text=if(camConfig.canSelectPhotoResolution)
+                title(camConfig.photoResolution) else getString(R.string.photo_resolution_automatic_mode)
         }
-
-        highResSetting.setOnClickListener {
-            highResToggle.performClick()
+        refreshResolution()
+        resolutionSetting.setOnClickListener {
+            if(!camConfig.canSelectPhotoResolution) {showMessage(getString(R.string.photo_resolution_automatic_mode));return@setOnClickListener}
+            MaterialAlertDialogBuilder(this).setTitle(R.string.photo_resolution)
+                .setSingleChoiceItems(choices.map(::title).toTypedArray(),choices.indexOf(camConfig.photoResolution).coerceAtLeast(0)) {dialog,index->
+                    camConfig.photoResolution=choices[index];refreshResolution();dialog.dismiss()
+                }.setNegativeButton(android.R.string.cancel,null).show()
         }
 
         if (!showStorageSettings) {

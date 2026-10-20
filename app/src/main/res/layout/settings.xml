@@ -182,6 +182,78 @@
                     </LinearLayout>
 
                     <LinearLayout
+                        android:id="@+id/portrait_blur_setting"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:minHeight="48dp"
+                        android:paddingHorizontal="@dimen/settings_dialog_menu_item_horizontal"
+                        android:gravity="center_vertical"
+                        android:orientation="vertical">
+
+                        <TextView
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:labelFor="@id/portrait_blur_slider"
+                            android:text="@string/portrait_strength" />
+                        <com.google.android.material.slider.Slider
+                            android:id="@+id/portrait_blur_slider"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:minHeight="48dp"
+                            android:contentDescription="@string/portrait_strength"
+                            android:valueFrom="1"
+                            android:valueTo="20"
+                            android:stepSize="1" />
+                    </LinearLayout>
+                    <LinearLayout
+                        android:id="@+id/photo_format_setting"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:minHeight="48dp"
+                        android:paddingHorizontal="@dimen/settings_dialog_menu_item_horizontal"
+                        android:gravity="center_vertical"
+                        android:orientation="horizontal">
+                        <TextView
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:labelFor="@id/photo_format_spinner"
+                            android:text="@string/photo_output_format" />
+                        <Spinner
+                            android:id="@+id/photo_format_spinner"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:minHeight="48dp" />
+                    </LinearLayout>
+                    <LinearLayout
+                        android:id="@+id/raw_lens_setting"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:minHeight="48dp"
+                        android:paddingHorizontal="@dimen/settings_dialog_menu_item_horizontal"
+                        android:gravity="center_vertical"
+                        android:orientation="horizontal">
+                        <TextView
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:labelFor="@id/raw_lens_spinner"
+                            android:text="@string/photo_lens" />
+                        <Spinner
+                            android:id="@+id/raw_lens_spinner"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:minHeight="48dp" />
+                    </LinearLayout>
+                    <TextView
+                        android:id="@+id/raw_format_info"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:paddingHorizontal="@dimen/settings_dialog_menu_item_horizontal"
+                        android:paddingBottom="12dp"
+                        android:text="@string/raw_format_info" />
+
+                    <LinearLayout
                         android:id="@+id/video_quality_setting"
                         android:layout_width="match_parent"
                         android:layout_height="@dimen/settings_dialog_menu_item_height"
@@ -316,12 +388,13 @@
                         android:orientation="horizontal">
 
                         <TextView
+                            android:id="@+id/capture_quality_label"
                             android:layout_height="wrap_content"
                             android:layout_width="0dp"
                             android:layout_gravity="center_vertical"
                             android:layout_weight="1"
                             android:labelFor="@id/wait_for_focus_lock_switch"
-                            android:text="@string/wait_for_focus_lock"/>
+                            android:text="@string/enhanced_quality"/>
 
                         <LinearLayout
                             android:id="@+id/wait_for_focus_lock_container"
@@ -332,15 +405,24 @@
                             <com.google.android.material.materialswitch.MaterialSwitch
                                 android:id="@+id/wait_for_focus_lock_switch"
                                 android:layout_width="wrap_content"
-                                android:layout_height="@dimen/settings_dialog_switch_height"
-                                android:scaleX="@integer/settings_dialog_switch_scale"
-                                android:scaleY="@integer/settings_dialog_switch_scale"
+                                android:layout_height="48dp"
+                                android:minWidth="48dp"
                                 android:checked="true"
-                                android:contentDescription="@string/wait_for_focus_lock"/>
+                                android:contentDescription="@string/enhanced_quality"/>
 
                         </LinearLayout>
 
                     </LinearLayout>
+                    <TextView
+                        android:id="@+id/enhanced_photo_info"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:paddingHorizontal="@dimen/settings_dialog_menu_item_horizontal"
+                        android:paddingBottom="@dimen/settings_dialog_menu_item_vertical"
+                        android:text="@string/enhanced_photo_info"
+                        android:textColor="@android:color/white"
+                        android:visibility="gone" />
+
 
 
                     <LinearLayout

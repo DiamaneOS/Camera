@@ -157,7 +157,7 @@ class VideoCapturer(private val mActivity: MainActivity) {
 
         val ctx = mActivity
 
-        if (ctx.settingsDialog.includeAudioToggle.isChecked) {
+        if (camConfig.includeAudio) {
             if (ctx.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PERMISSION_GRANTED) {
                 includeAudio = true
             } else {
@@ -202,9 +202,9 @@ class VideoCapturer(private val mActivity: MainActivity) {
             afterRecordingStops()
         }
 
-        camConfig.mPlayer.playVRStartSound(handler) {
+        val beginRecording = Runnable {
             if (consumed) {
-                return@playVRStartSound
+                return@Runnable
             }
 
             consumed = true
@@ -294,6 +294,15 @@ class VideoCapturer(private val mActivity: MainActivity) {
             } catch (e: Exception) {
                 e.printStackTrace()
             }
+        }
+        if (includeAudio) {
+            // Keep the cue out of recordings that include microphone audio.
+            camConfig.mPlayer.playVRStartSound(handler, beginRecording)
+        } else {
+            // Silent Video and SLO-MO need not wait for the entire cue before
+            // starting the encoder. Play the cue while acquisition starts.
+            camConfig.mPlayer.playVRStartSound(handler, Runnable {})
+            beginRecording.run()
         }
     }
 

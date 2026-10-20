@@ -4,7 +4,6 @@ import android.Manifest
 import android.animation.ArgbEvaluator
 import android.animation.ValueAnimator
 import android.annotation.SuppressLint
-import android.app.Dialog
 import android.content.Context
 import android.content.pm.PackageManager
 import android.graphics.Color
@@ -13,6 +12,7 @@ import android.os.Handler
 import android.os.Looper
 import android.util.Log
 import android.view.Gravity
+import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
@@ -29,6 +29,7 @@ import android.widget.RadioGroup
 import android.widget.ScrollView
 import android.widget.Spinner
 import android.widget.ToggleButton
+import androidx.activity.ComponentDialog
 import androidx.activity.OnBackPressedCallback
 import androidx.annotation.StringRes
 import androidx.camera.core.AspectRatio
@@ -44,6 +45,7 @@ import androidx.core.view.ViewCompat
 import app.grapheneos.camera.CamConfig
 import app.grapheneos.camera.CameraMode
 import app.grapheneos.camera.R
+import app.grapheneos.camera.capturer.PhotoOutputFormat
 import app.grapheneos.camera.capturer.VideoFrameRate
 import app.grapheneos.camera.databinding.SettingsBinding
 import app.grapheneos.camera.ui.activities.MainActivity
@@ -56,7 +58,7 @@ import kotlin.math.max
 
 @SuppressLint("ClickableViewAccessibility")
 class SettingsDialog(val mActivity: MainActivity, themedContext: Context) :
-    Dialog(themedContext) {
+    ComponentDialog(themedContext) {
     val camConfig = mActivity.camConfig
 
     private val binding: SettingsBinding by lazy { SettingsBinding.inflate(layoutInflater) }
@@ -106,8 +108,7 @@ class SettingsDialog(val mActivity: MainActivity, themedContext: Context) :
 
     private fun getString(@StringRes id: Int) = mActivity.getString(id)
 
-    // The panel window is not focusable, so it never sees the back event itself and back would
-    // otherwise fall through to the activity and close the app.
+    // Own Back in the focusable panel, including gesture Back, while keeping slide dismissal.
     private val backCallback = object : OnBackPressedCallback(false) {
         override fun handleOnBackPressed() {
             slideDialogUp()
@@ -117,7 +118,18 @@ class SettingsDialog(val mActivity: MainActivity, themedContext: Context) :
     init {
         setContentView(binding.root)
 
-        mActivity.onBackPressedDispatcher.addCallback(mActivity, backCallback)
+        onBackPressedDispatcher.addCallback(this, backCallback)
+        setOnKeyListener { _, code, event ->
+            when (code) {
+                KeyEvent.KEYCODE_VOLUME_DOWN, KeyEvent.KEYCODE_VOLUME_UP, KeyEvent.KEYCODE_CAMERA,
+                KeyEvent.KEYCODE_FOCUS, KeyEvent.KEYCODE_ZOOM_IN, KeyEvent.KEYCODE_ZOOM_OUT -> {
+                    if (event.action == KeyEvent.ACTION_UP) mActivity.onKeyUp(code, event)
+                    else mActivity.onKeyDown(code, event)
+                    true
+                }
+                else -> false
+            }
+        }
 
         dialog = binding.settingsDialog
         dialog.setOnClickListener {}
@@ -136,6 +148,7 @@ class SettingsDialog(val mActivity: MainActivity, themedContext: Context) :
 
         setOnDismissListener {
             mActivity.settingsIcon.visibility = View.VISIBLE
+            mActivity.refreshCaptureHints()
         }
 
         val background: View = binding.background
@@ -144,6 +157,7 @@ class SettingsDialog(val mActivity: MainActivity, themedContext: Context) :
         }
 
         val rootView = binding.root
+        var scrollingSettings = false
         rootView.setOnInterceptTouchEventListener(
             object : SettingsFrameLayout.OnInterceptTouchEventListener {
 
@@ -152,7 +166,20 @@ class SettingsDialog(val mActivity: MainActivity, themedContext: Context) :
                     ev: MotionEvent?,
                     disallowIntercept: Boolean
                 ): Boolean {
-                    return mActivity.gestureDetector.onTouchEvent(ev!!)
+                    val event = ev ?: return false
+                    if (event.actionMasked == MotionEvent.ACTION_DOWN) {
+                        val bounds = Rect()
+                        binding.settingsScrollview.getGlobalVisibleRect(bounds)
+                        scrollingSettings = bounds.contains(event.rawX.toInt(), event.rawY.toInt()) &&
+                            (binding.settingsScrollview.canScrollVertically(-1) || binding.settingsScrollview.canScrollVertically(1))
+                    }
+                    // The camera's fling handler dismisses the panel as a side effect.
+                    // Keep gestures that begin in overflowing settings with the ScrollView.
+                    if (scrollingSettings || disallowIntercept) {
+                        if (event.actionMasked == MotionEvent.ACTION_UP || event.actionMasked == MotionEvent.ACTION_CANCEL) scrollingSettings = false
+                        return false
+                    }
+                    return mActivity.gestureDetector.onTouchEvent(event)
                 }
 
                 override fun onTouchEvent(
@@ -409,10 +436,6 @@ class SettingsDialog(val mActivity: MainActivity, themedContext: Context) :
 
         window?.attributes?.layoutInDisplayCutoutMode =
             WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_DEFAULT
-        window?.setFlags(
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-        )
 
         var backgroundColor = ContextCompat.getColor(context, android.R.color.black)
         backgroundColor = ColorUtils.setAlphaComponent(backgroundColor, 150)
@@ -517,7 +540,83 @@ class SettingsDialog(val mActivity: MainActivity, themedContext: Context) :
         })
     }
 
+    private fun reloadPhotoFormats() {
+        val formats = camConfig.supportedPhotoOutputFormats
+        val processed = camConfig.currentMode == CameraMode.NIGHT || camConfig.currentMode == CameraMode.PORTRAIT
+        val visible = !camConfig.isVideoMode && ((camConfig.currentMode == CameraMode.CAMERA && formats.size > 1) || processed)
+        binding.photoFormatSetting.visibility = if (visible) View.VISIBLE else View.GONE
+        binding.photoFormatSpinner.isEnabled = formats.size > 1
+        binding.photoFormatSpinner.onItemSelectedListener = null
+        binding.photoFormatSpinner.adapter = ArrayAdapter(mActivity, android.R.layout.simple_spinner_dropdown_item,
+            formats.map { getString(when (it) {
+                PhotoOutputFormat.JPEG -> R.string.photo_jpeg
+                PhotoOutputFormat.JPEG_RAW -> R.string.photo_jpeg_raw
+                PhotoOutputFormat.RAW -> R.string.photo_raw
+            }) })
+        binding.photoFormatSpinner.setSelection(formats.indexOf(camConfig.activePhotoOutputFormat).coerceAtLeast(0), false)
+        binding.photoFormatSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onNothingSelected(parent: AdapterView<*>?) {}
+            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                val choice = formats[position]
+                if (choice != camConfig.activePhotoOutputFormat) {
+                    camConfig.photoOutputFormat = choice
+                    camConfig.startCamera(true)
+                    showOnlyRelevantSettings()
+                }
+            }
+        }
+        val raw = visible && camConfig.activePhotoOutputFormat != PhotoOutputFormat.JPEG
+        val night = camConfig.softwareNight
+        val portrait = camConfig.softwarePortrait
+        binding.portraitBlurSetting.visibility = if (portrait) View.VISIBLE else View.GONE
+        binding.portraitBlurSlider.clearOnChangeListeners()
+        binding.portraitBlurSlider.value = camConfig.portraitBlur.toFloat()
+        binding.portraitBlurSlider.addOnChangeListener { _, value, fromUser ->
+            if (fromUser) camConfig.portraitBlur = value.toInt()
+        }
+        binding.rawFormatInfo.setText(when {
+            processed -> R.string.processed_format_info
+            camConfig.activePhotoOutputFormat == PhotoOutputFormat.JPEG_RAW &&
+                camConfig.enhancedPhotoAvailable -> R.string.jpeg_raw_format_info
+            else -> R.string.raw_format_info
+        })
+        binding.rawFormatInfo.visibility = if (raw || processed) View.VISIBLE else View.GONE
+        val lenses = camConfig.selectableRawLenses()
+        val presets = camConfig.zoomPresets()
+        val coveredByPresets = presets.any { it == 1f } && lenses.all {
+            it.label == R.string.lens_main || it.label == R.string.lens_ultra_wide && presets.any { zoom -> zoom < 1f }
+        }
+        binding.rawLensSetting.visibility = if ((raw || night) && lenses.size > 1 && !coveredByPresets) View.VISIBLE else View.GONE
+        binding.rawLensSpinner.onItemSelectedListener = null
+        binding.rawLensSpinner.adapter = ArrayAdapter(mActivity, android.R.layout.simple_spinner_dropdown_item,
+            lenses.map { getString(it.label) })
+        val selected = lenses.indexOfFirst { it.id == camConfig.rawLensId }.coerceAtLeast(0)
+        binding.rawLensSpinner.setSelection(selected, false)
+        binding.rawLensSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onNothingSelected(parent: AdapterView<*>?) {}
+            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                if (position != selected) {
+                    camConfig.rawLensId = lenses[position].id
+                    camConfig.startCamera(true)
+                    showOnlyRelevantSettings()
+                }
+            }
+        }
+    }
+
     fun showOnlyRelevantSettings() {
+        reloadPhotoFormats()
+        val qualityLabel = getString(if (camConfig.activePhotoOutputFormat == PhotoOutputFormat.JPEG &&
+            camConfig.enhancedPhotoAvailable) R.string.enhanced_quality else R.string.prioritize_capture_quality)
+        binding.captureQualityLabel.text = qualityLabel
+        binding.waitForFocusLockSwitch.contentDescription = qualityLabel
+        binding.aspectRatioToggle.isEnabled = !camConfig.softwareNight &&
+            camConfig.activePhotoOutputFormat == PhotoOutputFormat.JPEG
+        binding.flashToggleOption.isEnabled = !camConfig.softwareNight && !camConfig.softwarePhoto
+        binding.torchToggleOption.isEnabled = !camConfig.softwareNight && !camConfig.softwarePhoto
+        binding.enhancedPhotoInfo.visibility = if (camConfig.currentMode == CameraMode.CAMERA &&
+            !camConfig.isVideoMode && camConfig.activePhotoOutputFormat == PhotoOutputFormat.JPEG &&
+            camConfig.enhancedPhotoAvailable) View.VISIBLE else View.GONE
         binding.waitForFocusLockSetting.visibility =
             if (camConfig.currentMode == CameraMode.CAMERA && !camConfig.isVideoMode) {
                 View.VISIBLE
@@ -525,7 +624,8 @@ class SettingsDialog(val mActivity: MainActivity, themedContext: Context) :
                 View.GONE
             }
         if (camConfig.isVideoMode) {
-            includeAudioSetting.visibility = View.VISIBLE
+            includeAudioSetting.visibility = if (camConfig.currentMode == CameraMode.SLOW_MOTION)
+                View.GONE else View.VISIBLE
             videoQualitySetting.visibility = View.VISIBLE
             binding.videoFrameRateSetting.visibility = View.VISIBLE
             enableEISSetting.visibility = if (camConfig.canApplyVideoStabilization()) {
@@ -814,7 +914,9 @@ class SettingsDialog(val mActivity: MainActivity, themedContext: Context) :
 
     private fun getAvailableQualities(): List<Quality> {
         val cameraInfo = camConfig.camera?.cameraInfo ?: return Collections.emptyList()
-        return Recorder.getVideoCapabilities(cameraInfo).getSupportedQualities(DynamicRange.SDR)
+        return if(camConfig.currentMode==app.grapheneos.camera.CameraMode.SLOW_MOTION)
+            camConfig.eligibleSlowMotionQualities(cameraInfo)
+        else Recorder.getVideoCapabilities(cameraInfo).getSupportedQualities(DynamicRange.SDR)
     }
 
     private fun getAvailableQTitles(): List<String> {
@@ -896,6 +998,7 @@ class SettingsDialog(val mActivity: MainActivity, themedContext: Context) :
         updateGridToggleUI()
 
         mActivity.settingsIcon.visibility = View.INVISIBLE
+        mActivity.hideCaptureHints()
         super.show()
         backCallback.isEnabled = true
 
@@ -931,7 +1034,7 @@ class SettingsDialog(val mActivity: MainActivity, themedContext: Context) :
     }
 
     fun reloadFrameRates() {
-        frameRateChoices = listOf(null) + camConfig.availableVideoFrameRates
+        frameRateChoices = (if(camConfig.currentMode==app.grapheneos.camera.CameraMode.SLOW_MOTION) emptyList() else listOf(null)) + camConfig.availableVideoFrameRates
         val labels = frameRateChoices.map { rate ->
             when {
                 rate == null -> getString(R.string.video_frame_rate_auto)

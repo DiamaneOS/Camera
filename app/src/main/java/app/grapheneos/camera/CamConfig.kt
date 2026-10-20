@@ -1550,6 +1550,7 @@ class CamConfig(private val mActivity: MainActivity) {
                 // extension verdicts probed through the previous instance (including bind-time
                 // blacklists, see startCamera) describe vendor state that no longer exists.
                 extensionUsability.clear()
+                slowMotionRateCache.clear()
                 probedCameraProvider = provider
             }
             cameraProvider = provider
@@ -1751,7 +1752,6 @@ class CamConfig(private val mActivity: MainActivity) {
     // is left alone.
     private fun supportedVideoQuality(): Quality {
         val quality = videoQuality
-        if (quality == Quality.HIGHEST) return quality
 
         val cameraInfo = try {
             cameraProvider?.getCameraInfo(cameraSelector) ?: return quality
@@ -1759,6 +1759,12 @@ class CamConfig(private val mActivity: MainActivity) {
             Log.w(TAG, "Unable to resolve camera info for quality lookup", exception)
             return quality
         }
+
+        if (currentMode == CameraMode.SLOW_MOTION) {
+            return app.grapheneos.camera.capturer.SlowMotionQualityPolicy.resolve(
+                quality.takeUnless { it == Quality.HIGHEST }, eligibleSlowMotionQualities(cameraInfo)) ?: Quality.HIGHEST
+        }
+        if (quality == Quality.HIGHEST) return quality
 
         val supportedQualities = Recorder.getVideoCapabilities(cameraInfo)
             .getSupportedQualities(DynamicRange.SDR)
@@ -1814,7 +1820,8 @@ class CamConfig(private val mActivity: MainActivity) {
 
     // A saved frame rate belongs to one camera and resolved recording quality.
     private fun videoFrameRateKey(cameraInfo: CameraInfo): Pair<String, Quality?> {
-        val qualities = Recorder.getVideoCapabilities(cameraInfo).getSupportedQualities(DynamicRange.SDR)
+        val qualities = if (currentMode == CameraMode.SLOW_MOTION) eligibleSlowMotionQualities(cameraInfo)
+            else Recorder.getVideoCapabilities(cameraInfo).getSupportedQualities(DynamicRange.SDR)
         val requestedQuality = supportedVideoQuality()
         val quality = if (requestedQuality == Quality.HIGHEST) qualities.firstOrNull() else requestedQuality
         val cameraId = Camera2CameraInfo.from(cameraInfo).cameraId
@@ -1823,7 +1830,21 @@ class CamConfig(private val mActivity: MainActivity) {
 
     // Fixed high-speed rates (120 fps and up) the camera offers at this quality, recorded as slow
     // motion. Cameras without a high-speed profile for the quality offer none.
+    private val slowMotionRateCache = java.util.concurrent.ConcurrentHashMap<Pair<String,Quality>,List<VideoFrameRate>>()
+
+    internal fun eligibleSlowMotionQualities(cameraInfo: CameraInfo): List<Quality> =
+        app.grapheneos.camera.capturer.SlowMotionQualityPolicy.eligible(
+            Recorder.getHighSpeedVideoCapabilities(cameraInfo)?.getSupportedQualities(DynamicRange.SDR).orEmpty()
+        ) { slowMotionFrameRates(cameraInfo,it).isNotEmpty() }
+
     private fun slowMotionFrameRates(cameraInfo: CameraInfo, quality: Quality): List<VideoFrameRate> {
+        val key = Camera2CameraInfo.from(cameraInfo).cameraId to quality
+        slowMotionRateCache[key]?.let { return it }
+        val rates = querySlowMotionFrameRates(cameraInfo,quality)
+        return slowMotionRateCache.putIfAbsent(key,rates) ?: rates
+    }
+
+    private fun querySlowMotionFrameRates(cameraInfo: CameraInfo, quality: Quality): List<VideoFrameRate> {
         val capabilities = Recorder.getHighSpeedVideoCapabilities(cameraInfo) ?: return emptyList()
         if (quality !in capabilities.getSupportedQualities(DynamicRange.SDR)) return emptyList()
         val probe = HighSpeedVideoSessionConfig(
@@ -2199,6 +2220,13 @@ class CamConfig(private val mActivity: MainActivity) {
 
         cameraSelector = createCameraSelector(lensFacing)
 
+        if (currentMode == CameraMode.SLOW_MOTION &&
+            eligibleSlowMotionQualities(cameraProvider!!.getCameraInfo(cameraSelector)).isEmpty()) {
+            mActivity.showMessage(R.string.slow_motion_unavailable)
+            switchMode(CameraMode.VIDEO)
+            return
+        }
+
         val builder = ImageCapture.Builder()
 
         // To use the last frame instead of showing a blank screen when
@@ -2283,6 +2311,11 @@ class CamConfig(private val mActivity: MainActivity) {
         // round.
         // Slow motion is a constrained high-speed session: no stabilization, snapshots or mirroring.
         val slowMotion = if (isVideoMode && appliedExtension == null) savedSlowMotionRate() else null
+        if (currentMode == CameraMode.SLOW_MOTION && slowMotion == null) {
+            mActivity.showMessage(R.string.slow_motion_unavailable)
+            switchMode(CameraMode.VIDEO)
+            return
+        }
         val usesFeatureGroup = isVideoMode && slowMotion == null && enableEIS && canApplyVideoStabilization()
         val videoQualityFeature: GroupableFeature? = when {
             usesFeatureGroup -> videoQualityAsGroupableFeature()
@@ -2856,8 +2889,7 @@ class CamConfig(private val mActivity: MainActivity) {
             for((selector,facing) in listOf(FRONT_CAMERA_SELECTOR to CameraSelector.LENS_FACING_FRONT,REAR_CAMERA_SELECTOR to CameraSelector.LENS_FACING_BACK)) {
                 try {
                     val info=provider.getCameraInfo(selector)
-                    Recorder.getHighSpeedVideoCapabilities(info)?.getSupportedQualities(DynamicRange.SDR)
-                        ?.firstOrNull {slowMotionFrameRates(info,it).isNotEmpty()}?.let {slowDefaults[facing]=it}
+                    eligibleSlowMotionQualities(info).firstOrNull()?.let {slowDefaults[facing]=it}
                 } catch (_: IllegalArgumentException) { }
             }
             ContextCompat.getMainExecutor(mActivity).execute {

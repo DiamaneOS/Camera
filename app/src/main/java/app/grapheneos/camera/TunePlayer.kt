@@ -7,15 +7,28 @@ import android.os.Handler
 import android.os.SystemClock
 import app.grapheneos.camera.ui.activities.MainActivity
 
-private fun prepareMediaPlayer(context: Context, resid: Int, listener: MediaPlayer.OnPreparedListener) {
-    MediaPlayer().apply {
-        setDataSource(context, Uri.parse("android.resource://" + context.getPackageName() + "/" + resid))
-        setOnPreparedListener(listener)
-        prepareAsync()
+open class TunePlayer(val context: MainActivity) : AutoCloseable {
+    private val worker=java.util.concurrent.Executors.newSingleThreadExecutor()
+    private val players=java.util.concurrent.CopyOnWriteArrayList<MediaPlayer>()
+    @Volatile private var closed=false
+    private fun prepareMediaPlayer(context: Context,resid: Int,listener: MediaPlayer.OnPreparedListener) {
+        worker.execute {
+            if(closed) return@execute
+            val player=MediaPlayer();players.add(player)
+            try {
+                player.setDataSource(context,Uri.parse("android.resource://"+context.packageName+"/"+resid))
+                player.setOnPreparedListener {if(!closed) listener.onPrepared(it)}
+                player.prepareAsync()
+            } catch (_: Exception) {players.remove(player);player.release()}
+        }
     }
-}
+    override fun close() {
+        if(closed) return
+        closed=true
+        worker.execute {players.forEach {it.setOnPreparedListener(null);it.setOnCompletionListener(null);it.release()};players.clear()}
+        worker.shutdown()
+    }
 
-open class TunePlayer(val context: MainActivity) {
 
     private lateinit var shutterPlayer: MediaPlayer
 
