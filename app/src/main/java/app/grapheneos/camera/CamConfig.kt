@@ -1039,6 +1039,7 @@ class CamConfig(private val mActivity: MainActivity) {
             }
         }
 
+            .filter { !usesProcessingCapture || app.grapheneos.camera.capturer.ProcessingGeometry.supported(it.width,it.height) }
     fun migrateFromLegacyPhotoQuality() {
         // If emphasis on quality/optimization was previously set by the user
         if (commonPref.contains(SettingValues.Key.EMPHASIS_ON_QUALITY)) {
@@ -1867,6 +1868,14 @@ class CamConfig(private val mActivity: MainActivity) {
 
                     val resolutionSelectorBuilder = ResolutionSelector.Builder()
                         .setAspectRatioStrategy(aspectRatioStrategy)
+                    if (usesProcessingCapture) {
+                        // Also constrain automatic/highest selection, Portrait,
+                        // and the serial CameraX RAW path, not only the menu.
+                        resolutionSelectorBuilder.setResolutionFilter { sizes, _ ->
+                            sizes.filter { app.grapheneos.camera.capturer.ProcessingGeometry.supported(
+                                it.width, it.height, raw = cameraXRawBurst) }
+                        }
+                    }
 
                     if (selectHighestResolution) {
                         resolutionSelectorBuilder.setAllowedResolutionMode(ResolutionSelector.PREFER_HIGHER_RESOLUTION_OVER_CAPTURE_RATE)
@@ -2169,6 +2178,11 @@ class CamConfig(private val mActivity: MainActivity) {
     // probeOnMiss is false because tab refreshes must never pay for a vendor probe on the main
     // thread (see loadTabs); an unprobed mode is left out of the tabs for now, exactly like a
     // transiently-failed probe always was, and comes back on the refresh that follows its probe.
+            c.getCameraCharacteristic(CameraCharacteristics.SENSOR_INFO_COLOR_FILTER_ARRANGEMENT) in 0..3 &&
+            c.getCameraCharacteristic(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+                ?.getOutputSizes(android.graphics.ImageFormat.RAW_SENSOR)?.any {
+                    app.grapheneos.camera.capturer.ProcessingGeometry.supported(it.width,it.height,raw=true)
+                } == true
     private fun availableModes(): Set<CameraMode> {
         return CameraMode.entries.filter {
             when (it) {

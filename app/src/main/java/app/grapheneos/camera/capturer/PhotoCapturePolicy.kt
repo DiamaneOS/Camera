@@ -20,6 +20,5 @@ internal object PhotoCapturePolicy {
         else -> Mode.LATENCY
     }
 
-    fun preferQuality(current: Boolean?, legacy: Boolean?, default: Boolean): Boolean =
-        current ?: legacy ?: default
+    fun preferQuality(current: Boolean?, default: Boolean): Boolean = current ?: default
 }

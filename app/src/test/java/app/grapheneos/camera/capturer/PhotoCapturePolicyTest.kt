@@ -33,15 +33,13 @@ class PhotoCapturePolicyTest {
         assertEquals(Mode.LATENCY, mode(video = true))
     }
 
-    @Test fun explicitPreferencesSurviveTheOldMisleadingSettingName() {
-        assertFalse(PhotoCapturePolicy.preferQuality(null, false, true))
-        assertTrue(PhotoCapturePolicy.preferQuality(null, true, false))
-        assertFalse(PhotoCapturePolicy.preferQuality(false, true, true))
-        assertTrue(PhotoCapturePolicy.preferQuality(true, false, false))
+    @Test fun explicitQualityChoiceOverridesTheDeviceDefault() {
+        assertFalse(PhotoCapturePolicy.preferQuality(false, true))
+        assertTrue(PhotoCapturePolicy.preferQuality(true, false))
     }
 
     @Test fun deviceDefaultAppliesOnlyWhenTheUserHasNotChosen() {
-        assertTrue(PhotoCapturePolicy.preferQuality(null, null, true))
-        assertFalse(PhotoCapturePolicy.preferQuality(null, null, false))
+        assertTrue(PhotoCapturePolicy.preferQuality(null, true))
+        assertFalse(PhotoCapturePolicy.preferQuality(null, false))
     }
 }
