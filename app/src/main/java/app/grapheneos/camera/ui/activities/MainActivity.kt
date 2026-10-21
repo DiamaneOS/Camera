@@ -401,6 +401,7 @@ open class MainActivity : AppCompatActivity(),
 
     /** Holds the previous camera's last frame over a rebind until the new camera has settled. */
     internal val previewHold = app.grapheneos.camera.capturer.PreviewSettle.Hold()
+    private var previewHoldTimer: Runnable? = null
 
     internal fun previewSettled(generation: Long) {
         if (previewHold.settle(generation) && previewView.previewStreamState.value == StreamState.STREAMING) revealPreview()
@@ -657,6 +658,7 @@ open class MainActivity : AppCompatActivity(),
         // The countdown would otherwise keep ticking while the app is in the background and fire a
         // capture into a camera that has already been unbound.
         cdTimer.cancelTimer()
+        previewHoldTimer?.let(handler::removeCallbacks); previewHoldTimer = null
         if (camConfig.isQRMode) {
             cancelFocusTimer()
         } else {
@@ -721,9 +723,12 @@ open class MainActivity : AppCompatActivity(),
             if (state == StreamState.STREAMING) {
                 if (previewHold.streaming(android.os.SystemClock.elapsedRealtime())) {
                     val generation = previewHold.current()
-                    handler.postDelayed({
-                        if (previewHold.expired(generation, android.os.SystemClock.elapsedRealtime())) revealPreview()
-                    }, app.grapheneos.camera.capturer.PreviewSettle.MAX_HOLD_MS)
+                    previewHoldTimer?.let(handler::removeCallbacks)
+                    previewHoldTimer = Runnable {
+                        previewHoldTimer = null
+                        if (previewHold.expired(generation, android.os.SystemClock.elapsedRealtime()) &&
+                            previewView.previewStreamState.value == StreamState.STREAMING) revealPreview()
+                    }.also { handler.postDelayed(it, app.grapheneos.camera.capturer.PreviewSettle.MAX_HOLD_MS) }
                 } else revealPreview()
                 camConfig.reloadSettings()
                 if (!camConfig.isQRMode) {
