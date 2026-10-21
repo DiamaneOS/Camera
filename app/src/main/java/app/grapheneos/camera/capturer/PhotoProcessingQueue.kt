@@ -152,7 +152,12 @@ internal object PhotoProcessingQueue {
             try {
                 if (AndroidIo.destinationState(storage) == PhotoQueueCore.Destination.LOST) resetStorageLocation(storage)
             } catch (error: Exception) { logFailure("Cannot reset the storage location", error) }
-            finally { queuePrefs.edit { remove(PENDING_STORAGE_RESET) } }
+            finally {
+                // A newer reset recorded meanwhile stays for the next session.
+                synchronized(lock) {
+                    if (queuePrefs.getString(PENDING_STORAGE_RESET, null) == storage) queuePrefs.edit(commit = true) { remove(PENDING_STORAGE_RESET) }
+                }
+            }
         }
     }
 
@@ -393,9 +398,9 @@ internal object PhotoProcessingQueue {
                 return PhotoQueueCore.Destination.LOST
             return try {
                 val root = DocumentsContract.buildDocumentUriUsingTree(tree, DocumentsContract.getTreeDocumentId(tree))
-                val found = bounded { signal -> context.contentResolver.query(root,
-                    arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID), null, signal) }?.use { it.moveToFirst() } ?: false
-                if (found) PhotoQueueCore.Destination.AVAILABLE else PhotoQueueCore.Destination.LOST
+                // A null cursor means the provider could not be reached (updating or died): temporary.
+                PhotoQueueCore.Destination.fromRoot(bounded { signal -> context.contentResolver.query(root,
+                    arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID), null, signal) }?.use { it.moveToFirst() })
             } catch (_: java.io.FileNotFoundException) { PhotoQueueCore.Destination.LOST }
             catch (_: IllegalArgumentException) { PhotoQueueCore.Destination.LOST }
             catch (_: Exception) { PhotoQueueCore.Destination.UNKNOWN }
@@ -405,7 +410,7 @@ internal object PhotoProcessingQueue {
          *  A locked device only records it: the next unlocked camera session applies it. */
         override fun forgetDestination(storage: String) {
             if (context.getSystemService(android.app.KeyguardManager::class.java).isDeviceLocked) {
-                context.getSharedPreferences(QUEUE_PREFS, Context.MODE_PRIVATE).edit { putString(PENDING_STORAGE_RESET, storage) }
+                synchronized(lock) { context.getSharedPreferences(QUEUE_PREFS, Context.MODE_PRIVATE).edit(commit = true) { putString(PENDING_STORAGE_RESET, storage) } }
                 return
             }
             resetStorageLocation(storage)

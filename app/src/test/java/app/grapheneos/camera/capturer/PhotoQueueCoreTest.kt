@@ -279,6 +279,12 @@ class PhotoQueueCoreTest {
         assertEquals(folder, io.rows.getValue(ready.uri).folder)
     }
 
+    @Test fun anUnreachableProviderIsTemporaryAndAnEmptyRootIsLost() {
+        assertEquals(PhotoQueueCore.Destination.UNKNOWN, PhotoQueueCore.Destination.fromRoot(null))
+        assertEquals(PhotoQueueCore.Destination.LOST, PhotoQueueCore.Destination.fromRoot(false))
+        assertEquals(PhotoQueueCore.Destination.AVAILABLE, PhotoQueueCore.Destination.fromRoot(true))
+    }
+
     @Test fun aGrantedFolderIsUsedAsBefore() {
         val io = FakeIo(); val queue = queue(io)
         io.granted.add("content://tree/kept")

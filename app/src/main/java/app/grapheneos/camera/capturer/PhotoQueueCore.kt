@@ -99,7 +99,13 @@ internal class PhotoQueueCore<D : PhotoQueueCore.Data>(
     }
 
     enum class RetryResult { STARTED, REFUSED, QUEUE_FULL }
-    enum class Destination { AVAILABLE, LOST, UNKNOWN }
+    enum class Destination {
+        AVAILABLE, LOST, UNKNOWN;
+        companion object {
+            /** The tree root query: a row, an empty answer (gone) or no cursor (provider unreachable). */
+            fun fromRoot(hasRow: Boolean?) = when (hasRow) { true -> AVAILABLE; false -> LOST; null -> UNKNOWN }
+        }
+    }
 
     private class Job<D : Data>(val id: String, val data: D) {
         var state = QUEUED
