@@ -390,8 +390,15 @@ bool finishImpl(uint32_t* pixels, int width, int height, float target, const std
                 // to the knee, then a shoulder that maps the frames' white to white, so the
                 // highlights they still held roll off instead of clipping.
                 float linear[3], offsets[3] = {black.red, black.green, black.blue};
-                for (int c = 0; c < 3; ++c) linear[c] = std::max(0.f, srgb->toLinear(channels[c] * scale) - offsets[c]);
-                float luminance = .2126f * linear[0] + .7152f * linear[1] + .0722f * linear[2];
+                for (int c = 0; c < 3; ++c) linear[c] = srgb->toLinear(channels[c] * scale) - offsets[c];
+                float luminance = std::max(0.f, .2126f * linear[0] + .7152f * linear[1] + .0722f * linear[2]);
+                // Pixels darker than the offset would lose a channel and turn green or cyan.
+                // Keep their luminance and fade them toward grey instead.
+                float lowest = std::min({linear[0], linear[1], linear[2]});
+                if (lowest < 0) {
+                    float keep = luminance > 0 ? luminance / (luminance - lowest) : 0;
+                    for (int c = 0; c < 3; ++c) linear[c] = std::max(0.f, luminance + keep * (linear[c] - luminance));
+                }
                 float lifted = jpegGain * luminance, over = lifted - knee;
                 if (over > 0) lifted = knee + over / (1 + over * shoulder);
                 float lift = luminance > 1e-7f ? lifted / luminance : jpegGain;
