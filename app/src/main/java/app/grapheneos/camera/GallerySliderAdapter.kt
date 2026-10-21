@@ -66,10 +66,14 @@ class GallerySliderAdapter(
         holder.bindToken = bindToken
         holder.binding.processingStatus.visibility = if (item.processingId != null) View.VISIBLE else View.GONE
         val canRetry = item.pendingFailed && PhotoProcessingQueue.canRetry(item)
+        val canMove = item.pendingFailed && PhotoProcessingQueue.canMoveToDefault(item)
         holder.binding.processingText.setText(if (!item.pendingFailed) R.string.photo_processing
+            else if (canMove) R.string.photo_destination_lost
             else if (canRetry) R.string.photo_processing_failed else R.string.photo_processing_unrecoverable)
         holder.binding.retryProcessing.visibility = if (canRetry) View.VISIBLE else View.GONE
         holder.binding.retryProcessing.setOnClickListener { item.processingId?.let(PhotoProcessingQueue::retry) }
+        holder.binding.saveToDefault.visibility = if (canMove) View.VISIBLE else View.GONE
+        holder.binding.saveToDefault.setOnClickListener { item.processingId?.let(PhotoProcessingQueue::moveToDefault) }
         ViewCompat.setOnApplyWindowInsetsListener(holder.binding.processingStatus) { view, insets ->
             val bottom = insets.getInsetsIgnoringVisibility(WindowInsetsCompat.Type.systemBars()).bottom
             val gap = (16 * view.resources.displayMetrics.density).toInt()

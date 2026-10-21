@@ -23,6 +23,28 @@ class PhotoQueueBudgetTest {
         assertTrue(budget.reserve("three", 10))
     }
 
+    @Test fun aParkedFailureFreesItsSlotAndComesBackOnlyWhenOneIsFree() {
+        val budget = PhotoQueueBudget(1, 1000, 1, 1000)
+        assertTrue(budget.reserve("failed", 10))
+        budget.park("failed")
+        assertTrue(budget.reserve("next", 10))
+        assertFalse(budget.unpark("failed"))
+        budget.release("next")
+        assertTrue(budget.unpark("failed"))
+        assertFalse(budget.reserve("other", 10))
+    }
+
+    @Test fun aFullFailedPoolLeavesTheJobInItsSlot() {
+        val budget = PhotoQueueBudget(2, 1000, 1, 1000)
+        assertTrue(budget.reserveParked("old", 10))
+        assertTrue(budget.reserve("failed", 10))
+        budget.park("failed")
+        assertTrue(budget.reserve("next", 10))
+        assertFalse(budget.reserve("third", 10))
+        budget.release("old"); budget.park("failed")
+        assertTrue(budget.reserve("third", 10))
+    }
+
     @Test(expected = IllegalArgumentException::class)
     fun capturedInputCannotGrowPastItsAcquisitionReservation() {
         val budget = PhotoQueueBudget(2, 1000)

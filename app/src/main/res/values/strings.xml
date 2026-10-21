@@ -286,6 +286,9 @@
     <string name="photo_processing_failed">Couldn’t finish this photo. Retry or delete it.</string>
     <string name="photo_processing_unrecoverable">Couldn’t finish this photo. Delete it and take another.</string>
     <string name="retry_photo_processing">Retry</string>
+    <string name="photo_destination_lost">Storage location not found. Retry, or save this photo to the default location.</string>
+    <string name="save_to_default_location">Save to default location</string>
+    <string name="photo_retry_queue_full">Wait for the photos in progress to finish, then retry.</string>
     <string name="slow_motion_mode">SLO-MO</string>
     <string name="night_hold_still_time">Hold still · %1$d/%2$d · about %3$d s</string>
     <string name="camera_preparing">Camera is getting ready. Try again in a moment.</string>

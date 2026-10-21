@@ -19,6 +19,7 @@ import android.util.Log
 import androidx.lifecycle.LiveData
 import androidx.lifecycle.MutableLiveData
 import app.grapheneos.camera.BuildConfig
+import app.grapheneos.camera.CamConfig
 import app.grapheneos.camera.CapturedItem
 import app.grapheneos.camera.ITEM_TYPE_IMAGE
 import app.grapheneos.camera.R
@@ -27,149 +28,50 @@ import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
 import java.util.Date
-import java.util.UUID
 import java.util.concurrent.Executors
-import java.util.concurrent.atomic.AtomicBoolean
 
 /** Captured inputs belong to durable gallery jobs, independently of the current camera operation. */
 internal object PhotoProcessingQueue {
     const val URI_SCHEME = "camera-processing"
     private const val MAX_PLAN = 256 * 1024
-    private const val MIN_FREE = 256L * 1024 * 1024
     private val lock = Any()
-    private val worker = Executors.newSingleThreadExecutor()
-    private val cleanup = Executors.newSingleThreadExecutor()
-    private val budget = PhotoQueueBudget()
-    private val records = linkedMapOf<String, Job>()
     private val revision = MutableLiveData(0)
     val changes: LiveData<Int> = revision
     private var version = 0
     private lateinit var context: Context
     private lateinit var root: File
+    private lateinit var core: PhotoQueueCore<Job>
 
     internal data class Reservation(val id: String, val bytes: Long)
-    private class Job(val id: String, val spec: ProcessedPhotoSpec, val plan: JSONObject, val directory: File) {
-        var state = "queued"
-        var bytes = 0L
-        var ready: CapturedItem? = null
-        var publication: Uri? = null
-        var publicationIdentity: PublicationRecovery.Identity? = null
-        val publicationLock = Any()
-        var lifetime: String? = null
-        var scheduled = false
-        var running = false
-        /** Automatic processing attempts since the capture or the user's last Retry. */
-        var attempts = 0
-        /** The lifetime ended before this job started: it stays queued for the next foreground. */
-        var deferred = false
-        val cancelled = AtomicBoolean()
-        val interrupted = AtomicBoolean()
-        fun stopped() = cancelled.get() || interrupted.get()
+
+    /** A job's captured settings and its processing plan, as the journal stores them. */
+    internal class Job(val spec: ProcessedPhotoSpec, val plan: JSONObject) : PhotoQueueCore.Data {
+        override val capturedAt get() = spec.capturedAt
+        override val dateString get() = spec.dateString
+        override val storage get() = spec.storage
+        override val compactable get() = plan.getJSONObject("metadata").has("colorReference")
     }
 
-    @Volatile var isRecovering=false
-        private set
+    val isRecovering: Boolean get() = ::core.isInitialized && core.isRecovering
 
     fun initialize(app: Context) {
-        val existing=synchronized(lock) {
+        synchronized(lock) {
             if (::context.isInitialized) return
-            context=app.applicationContext
-            root=File(context.filesDir,"photo-processing").apply {check(isDirectory || mkdirs())}
-            isRecovering=true
-            root.listFiles()?.filter {it.isDirectory && validId(it.name)}?.sortedBy {it.name}?.take(64).orEmpty()
+            context = app.applicationContext
+            root = File(context.filesDir, "photo-processing").apply { check(isDirectory || mkdirs()) }
+            core = PhotoQueueCore(AndroidIo, Executors.newSingleThreadExecutor(), Executors.newSingleThreadExecutor())
         }
-        cleanup.execute {
-        existing.forEach { directory ->
-            try {
-                require(directory.canonicalFile.parentFile == root.canonicalFile)
-                val file = File(directory, "request.json")
-                if (!file.exists() && !File(file.path + ".bak").exists()) { directory.deleteRecursively(); return@forEach }
-                require(file.length() in 1..MAX_PLAN || File(file.path + ".bak").length() in 1..MAX_PLAN)
-                val json = try {
-                    JSONObject(AtomicFile(file).openRead().use { it.readBytes().toString(Charsets.UTF_8) }).also {
-                        require(it.getInt("schema") == 1 && it.getString("id") == directory.name)
-                    }
-                } catch (error: org.json.JSONException) { unrecoverable(directory, file); throw error }
-                catch (error: IllegalArgumentException) { unrecoverable(directory, file); throw error }
-                val job = Job(directory.name, ProcessedPhotoSpec.fromJson(json.getJSONObject("spec")), json.getJSONObject("plan"), directory)
-                job.bytes = json.getLong("bytes")
-                job.attempts = json.optInt("attempts").coerceAtLeast(0)
-                job.publication = json.optString("publication").takeIf { it.isNotEmpty() }?.let(Uri::parse)
-                job.publicationIdentity = readPublicationIdentity(json)
-                val savedState = json.getString("state")
-                if (savedState == "cancelled") {
-                    job.cancelled.set(true)
-                    cleanupCancelled(job)
-                    return@forEach
-                }
-                val disposition = if(savedState=="complete" && job.publication!=null) PublicationRecovery.Decision.ADOPT
-                    else reconcilePublication(job)
-                val published = job.publication?.takeIf { disposition==PublicationRecovery.Decision.ADOPT }
-                if (published != null) {
-                    job.ready = CapturedItem(ITEM_TYPE_IMAGE, job.spec.dateString, published)
-                    job.state = "complete"
-                } else {
-                    job.state = if (disposition==PublicationRecovery.Decision.DEFER || savedState == "failed" || !inputsValid(job)) "failed" else "queued"
-                    require(job.bytes in 1..(240L * 1024 * 1024 + 1024 * 1024 + RawShadingData.MAX_BYTES))
-                    check(budget.reserve(job.id, job.bytes))
-                }
-                // A completed journal is already durable. Rewriting every completed
-                // capture here performed dozens of fsyncs on Application.onCreate.
-                // A job only becomes visible once its journal matches its state.
-                if (savedState != job.state || savedState != "complete") {
-                    try { persist(job) }
-                    catch (error: Throwable) { budget.release(job.id); throw error }
-                }
-                synchronized(lock) {records[job.id] = job}
-                if (job.state == "complete" && job.plan.getJSONObject("metadata").has("colorReference")) cleanup.execute {
-                    val retained = synchronized(lock) { records[job.id] === job && job.state == "complete" }
-                    if (retained) try { persist(job) } catch (_: Exception) { }
-                }
-                if (published != null && job.plan.optBoolean("portraitPrepared")) cleanup.execute {
-                    try { PortraitStore.commit(context, job.id, published) } catch (_: Exception) { }
-                }
-                if (job.state == "complete") discardInputs(job)
-            } catch (error: Throwable) {
-                // A partial acquisition is never advertised as a completed image.
-                logFailure("Cannot recover private photo job", error)
-                if (lowStorage()) storageFull()
-            }
-        }
-        isRecovering=false
-        // Only a visible Activity resumes work: a background start cannot run the
-        // foreground service and would mark the jobs failed.
-        changed();if (synchronized(lock) { resumeRequested.also { resumeRequested=false } }) resume()
-        }
+        core.recover()
     }
 
-    private var resumeRequested=false // guarded by lock
-
-    /** A journal that cannot be read is kept aside, its private inputs removed, and the user told. */
-    private fun unrecoverable(directory: File, journal: File) {
-        try {
-            journal.renameTo(File(directory, "request.json.unreadable"))
-            File(journal.path + ".bak").delete()
-            directory.listFiles()?.filter { it.name in setOf("source.jpg", "shading.bin", "result.jpg", "portrait.bin") ||
-                it.name.matches(Regex("frame-[0-9]{2}\\.bin")) }?.forEach(File::delete)
-        } finally { failureNotification() }
-    }
-
-    fun reserve(bytes: Long): Reservation? = synchronized(lock) {
+    fun reserve(bytes: Long): Reservation? {
         check(::context.isInitialized)
-        if(isRecovering) return@synchronized null
-        if (StatFs(root.path).availableBytes < bytes + MIN_FREE) return@synchronized null
-        val id = UUID.randomUUID().toString()
-        if (budget.reserve(id, bytes)) Reservation(id, bytes) else null
+        return core.reserve(bytes)?.let { Reservation(it.id, it.bytes) }
     }
 
-    /** A reservation that already became a queued job keeps its budget with the job. */
-    fun release(reservation: Reservation) {
-        if (synchronized(lock) { records.containsKey(reservation.id) }) return
-        budget.release(reservation.id)
-    }
+    fun release(reservation: Reservation) = core.release(PhotoQueueCore.Reservation(reservation.id, reservation.bytes))
 
-    /** Whether a reservation of this size fails for storage rather than a full queue. */
-    fun lacksStorage(bytes: Long): Boolean = try { StatFs(root.path).availableBytes < bytes + MIN_FREE } catch (_: Exception) { true }
+    fun lacksStorage(bytes: Long): Boolean = core.lacksStorage(bytes)
 
     @Suppress("DEPRECATION")
     fun enqueue(reservation: Reservation, spec: ProcessedPhotoSpec, payload: Bundle,
@@ -225,213 +127,26 @@ internal object PhotoProcessingQueue {
             require(File(directory, "preview.jpg").length() <= 1024 * 1024)
             bytes += File(directory, "preview.jpg").length()
             require(bytes <= reservation.bytes)
-            val job = Job(reservation.id, spec, plan, directory).apply { this.bytes = bytes }
             profile?.let { atomic(File(directory, "acquisition.json"), it) }
-            persist(job)
-            check(!cancelled())
-            budget.commit(job.id, bytes)
-            synchronized(lock) { records[job.id] = job }
+            core.accept(PhotoQueueCore.Reservation(reservation.id, reservation.bytes), Job(spec, plan), bytes, cancelled)
             accepted = true
-            try { start(job) } catch (error: Throwable) { logFailure("Cannot schedule captured photo", error) }
-            return pending(job)
+            return CapturedItem(ITEM_TYPE_IMAGE, spec.dateString, pendingUri(reservation.id))
         } finally {
-            if (!accepted) { directory.deleteRecursively(); budget.release(reservation.id) }
+            if (!accepted) { directory.deleteRecursively(); release(reservation) }
         }
     }
 
-    fun resume() {
-        if (synchronized(lock) { if (isRecovering) resumeRequested=true; isRecovering }) return
-        synchronized(lock) { records.values.filter { it.state == "queued" && !it.scheduled }.toList() }.forEach(::start)
-        cleanup.execute { PortraitStore.purgeDeleted(context) }
-        cleanup.execute { cleanupCancelledTombstones() }
-    }
-
-    private fun start(job: Job) {
-        synchronized(lock) {
-            if (job.scheduled || job.stopped() || job.state != "queued") return
-            // A job that keeps killing the worker stops being retried by itself.
-            if (!PhotoQueueAttempts.mayStart(job.attempts)) {
-                job.state = "failed"; persistQuietly(job)
-                failureNotification(); changed(); return
-            }
-            job.scheduled = true
-        }
-        try {
-            job.lifetime = PhotoProcessingLifetime.begin(context) { interrupt(job) }
-            worker.execute {
-                try { process(job) }
-                catch (error: Throwable) { logFailure("Photo worker stopped", error) }
-            }
-        } catch (error: Exception) {
-            synchronized(lock) { job.scheduled = false; job.state = "failed"; persistQuietly(job) }
-            job.lifetime?.let { PhotoProcessingLifetime.end(context, it) }; job.lifetime = null
-            failureNotification(); changed()
-        }
-        changed()
-    }
-
-    private fun process(job: Job) {
-        val memories = arrayListOf<SharedMemory>()
-        var published: CapturedItem? = null
-        try {
-            val deferred = synchronized(lock) {
-                if (job.deferred) { job.deferred = false; true } else {
-                    check(!job.stopped())
-                    job.running = true; job.state = "processing"; job.attempts++; persist(job); false
-                }
-            }
-            if (deferred) return
-            PhotoProcessingLifetime.renew()
-            when(reconcilePublication(job)) {
-                PublicationRecovery.Decision.ADOPT -> {
-                    check(!job.stopped())
-                    published=CapturedItem(ITEM_TYPE_IMAGE,job.spec.dateString,checkNotNull(job.publication))
-                    finishPublication(job,published)
-                    return
-                }
-                PublicationRecovery.Decision.DEFER -> error("Photo destination is temporarily unavailable")
-                PublicationRecovery.Decision.DISCARD -> error("Photo publication was cancelled")
-                PublicationRecovery.Decision.RETRY -> Unit
-            }
-            check(inputsValid(job))
-            val payload = decode(job.plan.getJSONObject("metadata"))
-            val files = job.plan.getJSONArray("files")
-            if (payload.getInt("mode") == 1 || payload.getInt("mode") == 4) {
-                val frames = arrayListOf<SharedMemory>()
-                for (index in 0 until files.length()) {
-                    val name = files.getJSONObject(index).getString("name")
-                    val memory = ProcessingClient.fileMemory("queued-raw", File(job.directory, name),
-                        if (name == "shading.bin") RawShadingData.MAX_BYTES.toLong() else 32L * 1024 * 1024)
-                    memories.add(memory)
-                    if (name == "shading.bin") payload.putParcelable("rawShading", memory) else frames.add(memory)
-                }
-                payload.putParcelableArrayList("frames", frames)
-            } else {
-                val jpeg = ProcessingClient.fileMemory("queued-jpeg", File(job.directory, "source.jpg")); memories.add(jpeg)
-                payload.putParcelable("jpeg", jpeg)
-                payload.putBoolean("depthEnabled", job.spec.depthEnabled)
-            }
-            check(!job.stopped())
-            val stats = Bundle()
-            val editData = File(job.directory, "portrait.bin")
-            val bytes = ProcessingClient.process(context, payload, job::stopped, stats) { memory ->
-                val mapping = memory.mapReadOnly()
-                try {
-                    PortraitData.decode(mapping)
-                    FileOutputStream(editData).use { output ->
-                        while (mapping.hasRemaining()) check(output.channel.write(mapping) > 0)
-                        output.fd.sync()
-                    }
-                } finally { SharedMemory.unmap(mapping) }
-            }
-            check(!job.stopped())
-            if (payload.getInt("mode") == 2) {
-                PortraitStore.prepare(context, job.id, File(job.directory, "source.jpg"), editData, job.spec)
-                synchronized(lock) { job.plan.put("portraitPrepared", true); persist(job) }
-            }
-            val file = File(job.directory, "result.jpg")
-            FileOutputStream(file).use { it.write(ProcessedJpeg.metadata(bytes, job.spec)); it.fd.sync() }
-            val identity=file.inputStream().use(PublicationRecovery::identity)
-            synchronized(lock) { job.publicationIdentity=identity;persist(job) }
-            published = PhotoFileStore.save(context, listOf(PhotoFileStore.Photo(file, ".jpg", "image/jpeg")),
-                job.spec.storage, Date(job.spec.capturedAt), job.spec.dateString, job::stopped,
-                removedPhoto={uri->clearPublication(job,uri)}) { uri ->
-                synchronized(lock) { job.publication = uri; persist(job) }
-            }.single()
-            finishPublication(job,published)
-            if (BuildConfig.DEBUG) {
-                val profile = JSONObject().put("mode", payload.getInt("mode")).put("depthEnabled", job.spec.depthEnabled)
-                    .put("cameraPermission", stats.getInt("cameraPermission", -999))
-                for (key in listOf("processMs", "nativeMs", "decodeMs", "modelMs", "inferenceMs", "depthInferenceMs", "neuralDenoiseMs", "encodeMs", "jpegStagePssKiB")) profile.put(key, stats.getLong(key))
-                for (key in listOf("effectiveFrames", "colorErrorBefore", "colorErrorAfter", "colorInliers")) profile.put(key, stats.getDouble(key))
-                profile.put("colorMatchApplied", stats.getBoolean("colorMatchApplied"))
-                profile.put("edgeAwareDemosaic",stats.getBoolean("edgeAwareDemosaic"))
-                profile.put("frequencyDenoise",stats.getBoolean("frequencyDenoise"))
-                profile.put("steadyPhotoFinish",stats.getBoolean("steadyPhotoFinish"))
-                profile.put("rawShadingApplied",stats.getBoolean("rawShadingApplied"))
-                profile.put("jpegRejectedFrames",stats.getDouble("jpegRejectedFrames"))
-                profile.put("jpegMaximumShift",stats.getDouble("jpegMaximumShift"))
-                try { atomic(File(File(context.filesDir, "processing-test").apply { mkdirs() }, "photo-profile-" + job.spec.capturedAt + ".json"), profile) }
-                catch (error: Exception) { Log.w("PhotoProcessingQueue", "Unable to write development profile", error) }
-            }
-        } catch (error: Exception) {
-            val failed = synchronized(lock) {
-                if (job.cancelled.get()) false
-                else if (published != null) { job.ready = published; job.state = "complete"; persistQuietly(job); false }
-                else { job.state = "failed"; persistQuietly(job); true }
-            }
-            if (failed) {
-                logFailure("Unable to finish captured photo", error)
-                failureNotification()
-            }
-        } finally {
-            memories.forEach(SharedMemory::close)
-            synchronized(lock) { job.running = false; job.scheduled = false }
-            if (job.cancelled.get()) {
-                cleanupCancelled(job)
-            } else if (job.state == "complete") {
-                discardInputs(job); budget.release(job.id)
-            }
-            job.lifetime?.let { PhotoProcessingLifetime.end(context, it) }; job.lifetime = null
-            prune(); changed()
-        }
-    }
-
-    private fun interrupt(job: Job) {
-        synchronized(lock) {
-            if (job.state == "complete" || job.cancelled.get()) return
-            if (job.interrupted.get()) return
-            // The service timed out before this job ran: keep it queued, never fail it unseen.
-            if (!job.running && job.state == "queued") { job.deferred = true; return }
-            job.interrupted.set(true)
-            job.state = "failed"
-            persistQuietly(job)
-        }
-        changed()
-    }
+    fun resume() = core.resume()
 
     /** Returns a completed photo when deletion raced with publication; otherwise cancels this job. */
-    fun cancel(id: String): CapturedItem? = cancelJob(id, false)
+    fun cancel(id: String): CapturedItem? = core.cancel(id)?.let { CapturedItem(ITEM_TYPE_IMAGE, it.dateString, Uri.parse(it.uri)) }
 
-    private fun cancelJob(id: String, includeCompleted: Boolean): CapturedItem? {
-        val job = synchronized(lock) {
-            val job = records[id] ?: return null
-            if (!includeCompleted) job.ready?.let { return it }
-            val previousReady = job.ready
-            val previousState = job.state
-            job.ready = null
-            job.state = "cancelled"
-            try { persist(job) }
-            catch (error: Exception) {
-                job.ready = previousReady; job.state = previousState
-                throw error
-            }
-            job.cancelled.set(true)
-            if (!job.running) records.remove(id)
-            job
-        }
-        if (!job.running) cleanup.execute {
-            cleanupCancelled(job)
-            job.lifetime?.let { PhotoProcessingLifetime.end(context, it) }; job.lifetime = null
-        }
-        changed()
-        return null
-    }
+    fun forgetPhoto(uri: Uri) = core.forgetPublished(uri.toString())
 
-    fun forgetPhoto(uri: Uri) {
-        cleanup.execute { PortraitStore.remove(context, uri) }
-        val ids = synchronized(lock) { records.values.filter { it.ready?.uri == uri }.map { it.id } }
-        ids.forEach(::forgetCompleted)
-    }
-
-    fun forgetCompleted(id: String) {
-        val removed = synchronized(lock) { records[id]?.takeIf { it.ready != null }?.let { records.remove(id) } }
-        removed?.let { cleanup.execute { it.directory.deleteRecursively() } }
-        changed()
-    }
+    fun forgetCompleted(id: String) = core.forgetCompleted(id)
 
     fun abandon(id: String) {
-        try { cancelJob(id, true) }
+        try { core.abandon(id) }
         catch (error: Exception) {
             logFailure("Cannot persist capture abandonment", error)
             context.mainExecutor.execute {
@@ -441,60 +156,47 @@ internal object PhotoProcessingQueue {
         }
     }
 
-    fun retry(id: String) {
-        val job = synchronized(lock) {
-            val job = records[id] ?: return
-            if (job.state != "failed" || job.running || (!inputsValid(job) && job.publication==null)) return
-            job.cancelled.set(false); job.interrupted.set(false); job.state = "queued"; job.attempts = 0
-            if (!persistQuietly(job)) { job.state = "failed"; return }
-            job
+    fun retry(id: String) = report(core.retry(id))
+
+    /** Publishes a photo whose folder is gone to the default location instead. */
+    fun moveToDefault(id: String) = report(core.moveToDefault(id))
+
+    private fun report(result: PhotoQueueCore.RetryResult) {
+        if (result == PhotoQueueCore.RetryResult.QUEUE_FULL) context.mainExecutor.execute {
+            android.widget.Toast.makeText(context, R.string.photo_retry_queue_full, android.widget.Toast.LENGTH_LONG).show()
         }
-        start(job)
     }
 
     fun resolve(item: CapturedItem): CapturedItem? {
         val id = item.processingId ?: return item
-        return synchronized(lock) {
-            val job=records[id]
-            if(job==null) item.takeIf {isRecovering} else if(job.cancelled.get()) null else job.ready ?: pending(job)
+        return when (val found = core.lookup(id)) {
+            PhotoQueueCore.Lookup.Unknown -> item.takeIf { isRecovering }
+            PhotoQueueCore.Lookup.Cancelled -> null
+            is PhotoQueueCore.Lookup.Ready -> CapturedItem(ITEM_TYPE_IMAGE, found.dateString, Uri.parse(found.uri))
+            is PhotoQueueCore.Lookup.Pending -> pending(found)
         }
     }
 
-    fun pendingItems(): List<CapturedItem> = synchronized(lock) {
-        records.values.filter { it.ready == null && !it.cancelled.get() }.map(::pending)
-    }
+    fun pendingItems(): List<CapturedItem> = core.pendingItems().map(::pending)
 
-    fun previewFile(item: CapturedItem): File? = synchronized(lock) {
-        records[item.processingId]?.let { File(it.directory, "preview.jpg").takeIf(File::isFile) }
-    }
+    fun previewFile(item: CapturedItem): File? = item.processingId?.takeIf { core.has(it) }
+        ?.let { File(File(root, it), "preview.jpg").takeIf(File::isFile) }
 
-    /** File checks run outside the queue lock, which journal fsyncs can hold for a while. */
-    fun canRetry(item: CapturedItem): Boolean {
-        val job = synchronized(lock) { records[item.processingId]?.takeIf { it.state == "failed" } } ?: return false
-        return job.publication != null || inputsValid(job)
-    }
+    fun canRetry(item: CapturedItem): Boolean = item.processingId?.let(core::canRetry) == true
+    fun canMoveToDefault(item: CapturedItem): Boolean = item.processingId?.let(core::canMoveToDefault) == true
 
-    private fun pending(job: Job) = CapturedItem(ITEM_TYPE_IMAGE, job.spec.dateString,
-        Uri.Builder().scheme(URI_SCHEME).authority(job.id).build(), pendingFailed = job.state == "failed")
+    private fun pendingUri(id: String) = Uri.Builder().scheme(URI_SCHEME).authority(id).build()
+    private fun pending(job: PhotoQueueCore.Lookup.Pending) =
+        CapturedItem(ITEM_TYPE_IMAGE, job.dateString, pendingUri(job.id), pendingFailed = job.failed)
 
-    private fun changed() {
-        synchronized(lock) { version++; revision.postValue(version) }
-        if (synchronized(lock) { records.values.none { it.state == "failed" && !it.cancelled.get() } }) {
-            context.getSystemService(NotificationManager::class.java).cancel(13)
-        }
-    }
     private fun validId(id: String) = id.matches(Regex("[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}"))
-    private fun discardInputs(job: Job) {
-        // A completed journal has an empty file list. Also remove leftovers from
-        // a process death between durable publication and ordinary cleanup.
-        job.directory.listFiles()?.filter {
-            it.name in setOf("source.jpg", "shading.bin", "result.jpg", "portrait.bin") ||
-                it.name.matches(Regex("frame-[0-9]{2}\\.bin"))
-        }?.forEach(File::delete)
+    private fun directory(id: String): File {
+        require(validId(id))
+        return File(root, id)
     }
 
-    private fun inputsValid(job: Job): Boolean = try {
-        val files = job.plan.getJSONArray("files"); require(files.length() in 1..9)
+    private fun inputsValid(directory: File, plan: JSONObject): Boolean = try {
+        val files = plan.getJSONArray("files"); require(files.length() in 1..9)
         var total = 0L; var shadingBytes = 0L
         val names = hashSetOf<String>()
         for (index in 0 until files.length()) {
@@ -503,10 +205,10 @@ internal object PhotoProcessingQueue {
             require(name == "source.jpg" || name == "shading.bin" || name.matches(Regex("frame-[0-9]{2}\\.bin")))
             val expected = entry.getLong("bytes")
             require(expected in 1..(if (name == "shading.bin") RawShadingData.MAX_BYTES.toLong() else 32L * 1024 * 1024))
-            require(File(job.directory, name).length() == expected)
+            require(File(directory, name).length() == expected)
             if (name == "shading.bin") { require(expected >= 24); shadingBytes = expected } else total += expected
         }
-        val mode = job.plan.getJSONObject("metadata").getJSONObject("mode").getInt("value")
+        val mode = plan.getJSONObject("metadata").getJSONObject("mode").getInt("value")
         require(mode in 1..3 || (mode == 4 && IspJpegNight.enabled(context)))
         if (mode == 1 || mode == 4) {
             val count = names.count { it.startsWith("frame-") }
@@ -514,7 +216,7 @@ internal object PhotoProcessingQueue {
             require((0 until count).all { "frame-%02d.bin".format(java.util.Locale.ROOT, it) in names })
             if (mode == 4) {
                 require(count in 2..4 && shadingBytes == 0L)
-                val metadata = decode(job.plan.getJSONObject("metadata"))
+                val metadata = decode(plan.getJSONObject("metadata"))
                 val width = metadata.getInt("width"); val height = metadata.getInt("height")
                 require(width in 8..8192 && height in 8..8192 && width.toLong()*height <= 16_000_000)
                 require(files.length() == count)
@@ -524,22 +226,240 @@ internal object PhotoProcessingQueue {
         true
     } catch (_: Exception) { false }
 
-    private fun persist(job: Job) = atomic(File(job.directory, "request.json"), JSONObject().apply {
-        put("schema", 1); put("id", job.id); put("spec", job.spec.json())
-        // Once publication is complete the RAW reference has no remaining consumer.
-        // Keeping 96x96 RGB arrays in the last 32 journals made every cold launch
-        // parse hundreds of thousands of numbers before drawing the first frame.
-        val plan = if (job.state == "complete") JSONObject().apply {
-            val metadata = job.plan.getJSONObject("metadata")
-            put("metadata", JSONObject().apply { metadata.keys().forEach { key -> if (key != "colorReference") put(key, metadata.get(key)) } })
-            put("files", JSONArray())
-            put("portraitPrepared", job.plan.optBoolean("portraitPrepared"))
-        } else job.plan
+    private fun journalJson(journal: PhotoQueueCore.Journal<Job>, plan: JSONObject) = JSONObject().apply {
+        put("schema", 1); put("id", journal.id); put("spec", journal.data.spec.json())
         put("plan", plan)
-        put("state", job.state); put("bytes", job.bytes); put("publication", job.publication?.toString() ?: "")
-        put("attempts", job.attempts)
-        job.publicationIdentity?.let { put("publicationBytes",it.bytes);put("publicationSha256",it.sha256) }
-    })
+        put("state", journal.state); put("bytes", journal.bytes); put("publication", journal.publication ?: "")
+        put("attempts", journal.attempts)
+        journal.identity?.let { put("publicationBytes", it.bytes); put("publicationSha256", it.sha256) }
+        journal.destination?.let { put("destination", it) }
+        if (journal.destinationLost) put("failure", "destination")
+    }
+
+    /** A journal decodes completely or the job is set aside: no partial job is ever advertised. */
+    private fun readJournalFile(file: File, id: String): PhotoQueueCore.Journal<Job> {
+        require(file.length() in 1..MAX_PLAN || File(file.path + ".bak").length() in 1..MAX_PLAN)
+        val text = AtomicFile(file).openRead().use { it.readBytes().toString(Charsets.UTF_8) }
+        return try {
+            val json = JSONObject(text)
+            require(json.getInt("schema") == 1 && json.getString("id") == id)
+            val plan = json.getJSONObject("plan")
+            val destination = json.optString("destination").takeIf { it.isNotEmpty() }
+            require(destination == null || destination == CamConfig.SettingValues.Default.STORAGE_LOCATION)
+            PhotoQueueCore.Journal(id, Job(ProcessedPhotoSpec.fromJson(json.getJSONObject("spec")), plan),
+                json.getString("state"), json.getLong("bytes"), json.optString("publication").takeIf { it.isNotEmpty() },
+                json.optInt("attempts"), readPublicationIdentity(json), destination,
+                plan.optBoolean("portraitPrepared"), json.optString("failure") == "destination")
+        } catch (error: org.json.JSONException) { throw PhotoQueueCore.UnreadableJournal(error) }
+        catch (error: IllegalArgumentException) { throw PhotoQueueCore.UnreadableJournal(error) }
+    }
+
+    private fun readPublicationIdentity(json: JSONObject): PublicationRecovery.Identity? =
+        if (json.has("publicationBytes") && json.has("publicationSha256"))
+            PublicationRecovery.Identity(json.getLong("publicationBytes"), json.getString("publicationSha256")) else null
+
+    private object AndroidIo : PhotoQueueCore.Io<Job> {
+        override val defaultStorage = CamConfig.SettingValues.Default.STORAGE_LOCATION
+
+        override fun jobIds() = root.listFiles()?.filter { it.isDirectory && validId(it.name) }?.map { it.name }
+            ?.sorted()?.take(64).orEmpty()
+
+        override fun hasJournal(id: String): Boolean {
+            val file = File(directory(id), "request.json")
+            return file.exists() || File(file.path + ".bak").exists()
+        }
+
+        override fun readJournal(id: String) = readJournalFile(File(directory(id), "request.json"), id)
+
+        override fun writeJournal(journal: PhotoQueueCore.Journal<Job>) {
+            // Once publication is complete the RAW reference has no remaining consumer.
+            // Keeping 96x96 RGB arrays in the last 32 journals made every cold launch
+            // parse hundreds of thousands of numbers before drawing the first frame.
+            val plan = journal.data.plan
+            val stored = if (journal.state == PhotoQueueCore.COMPLETE) JSONObject().apply {
+                val metadata = plan.getJSONObject("metadata")
+                put("metadata", JSONObject().apply { metadata.keys().forEach { key -> if (key != "colorReference") put(key, metadata.get(key)) } })
+                put("files", JSONArray())
+                put("portraitPrepared", journal.portraitPrepared)
+            } else plan.apply { if (journal.portraitPrepared) put("portraitPrepared", true) }
+            atomic(File(directory(journal.id), "request.json"), journalJson(journal, stored))
+        }
+
+        override fun setAside(id: String) {
+            val directory = directory(id)
+            val journal = File(directory, "request.json")
+            journal.renameTo(File(directory, "request.json.unreadable"))
+            File(journal.path + ".bak").delete()
+            discardInputs(id)
+        }
+
+        override fun deleteJob(id: String) { directory(id).deleteRecursively() }
+
+        override fun discardInputs(id: String) {
+            // A completed journal has an empty file list. Also remove leftovers from
+            // a process death between durable publication and ordinary cleanup.
+            directory(id).listFiles()?.filter {
+                it.name in setOf("source.jpg", "shading.bin", "result.jpg", "portrait.bin") ||
+                    it.name.matches(Regex("frame-[0-9]{2}\\.bin"))
+            }?.forEach(File::delete)
+        }
+
+        override fun inputsValid(id: String, data: Job) = inputsValid(directory(id), data.plan)
+
+        override fun freeBytes() = StatFs(root.path).availableBytes
+
+        override fun tombstoneIds(before: Long) = root.listFiles()?.filter { it.isDirectory && it.name.startsWith("cancelled-") &&
+            validId(it.name.removePrefix("cancelled-")) && it.lastModified() <= before }
+            ?.sortedBy { it.lastModified() }?.take(64)?.map { it.name.removePrefix("cancelled-") }.orEmpty()
+
+        private fun tombstone(id: String): File { require(validId(id)); return File(root, "cancelled-$id") }
+        override fun readTombstone(id: String) = readJournalFile(File(tombstone(id), "request.json"), id)
+        override fun writeTombstone(journal: PhotoQueueCore.Journal<Job>) {
+            val directory = tombstone(journal.id).apply { check(isDirectory || mkdir()) }
+            atomic(File(directory, "request.json"), journalJson(journal,
+                JSONObject().put("metadata", JSONObject()).put("files", JSONArray())))
+        }
+        override fun deleteTombstone(id: String) { tombstone(id).deleteRecursively() }
+        override fun touchTombstone(id: String) { tombstone(id).setLastModified(System.currentTimeMillis()) }
+
+        override fun publicationStatus(publication: PhotoQueueCore.Publication) = publicationStatus(
+            Uri.parse(publication.uri), publication)
+
+        override fun deletePublication(uri: String): Boolean {
+            val parsed = Uri.parse(uri)
+            return if (parsed.authority == MediaStore.AUTHORITY) context.contentResolver.delete(parsed, null, null) > 0
+                else DocumentsContract.deleteDocument(context.contentResolver, parsed)
+        }
+
+        override fun adoptableOrphan(dateString: String, identity: PublicationRecovery.Identity): String? {
+            // Pending rows can only be matched by name from Android 11.
+            if (android.os.Build.VERSION.SDK_INT < 30) return null
+            val resolver = context.contentResolver
+            val args = Bundle().apply {
+                putString(android.content.ContentResolver.QUERY_ARG_SQL_SELECTION,
+                    MediaStore.MediaColumns.DISPLAY_NAME + "=? AND " + MediaStore.MediaColumns.RELATIVE_PATH + "=?")
+                putStringArray(android.content.ContentResolver.QUERY_ARG_SQL_SELECTION_ARGS,
+                    arrayOf("IMG_$dateString.jpg", "$DEFAULT_MEDIA_STORE_CAPTURE_PATH/"))
+                @android.annotation.SuppressLint("InlinedApi") putInt(MediaStore.QUERY_ARG_MATCH_PENDING, MediaStore.MATCH_INCLUDE)
+            }
+            val rows = try {
+                bounded { resolver.query(CamConfig.imageCollectionUri, arrayOf(MediaStore.MediaColumns._ID, MediaStore.MediaColumns.IS_PENDING),
+                    args, it) }?.use {
+                    val list = arrayListOf<Pair<Uri, Boolean>>()
+                    while (it.moveToNext()) list.add(android.content.ContentUris.withAppendedId(CamConfig.imageCollectionUri, it.getLong(0)) to (it.getInt(1) != 0))
+                    list
+                }
+            } catch (_: Exception) { null } ?: return null
+            for ((uri, pending) in rows) {
+                val matches = try { openBounded(uri)?.use { PublicationRecovery.matches(it, identity) } ?: false } catch (_: Exception) { false }
+                if (matches) return uri.toString()
+                if (pending) try { resolver.delete(uri, null, null) } catch (_: Exception) { }
+            }
+            return null
+        }
+
+        override fun destinationAvailable(storage: String): Boolean = try {
+            val tree = Uri.parse(storage)
+            // A revoked grant leaves the folder in place but no longer ours to write.
+            val granted = context.contentResolver.persistedUriPermissions.any { it.uri == tree && it.isWritePermission }
+            granted && treeAnswers(DocumentsContract.buildDocumentUriUsingTree(tree, DocumentsContract.getTreeDocumentId(tree)))
+        } catch (_: Exception) { false }
+
+        @Suppress("DEPRECATION")
+        override fun process(id: String, data: Job, stopped: () -> Boolean, prepared: () -> Unit): PublicationRecovery.Identity {
+            val directory = directory(id)
+            val memories = arrayListOf<SharedMemory>()
+            try {
+                val payload = decode(data.plan.getJSONObject("metadata"))
+                val files = data.plan.getJSONArray("files")
+                if (payload.getInt("mode") == 1 || payload.getInt("mode") == 4) {
+                    val frames = arrayListOf<SharedMemory>()
+                    for (index in 0 until files.length()) {
+                        val name = files.getJSONObject(index).getString("name")
+                        val memory = ProcessingClient.fileMemory("queued-raw", File(directory, name),
+                            if (name == "shading.bin") RawShadingData.MAX_BYTES.toLong() else 32L * 1024 * 1024)
+                        memories.add(memory)
+                        if (name == "shading.bin") payload.putParcelable("rawShading", memory) else frames.add(memory)
+                    }
+                    payload.putParcelableArrayList("frames", frames)
+                } else {
+                    val jpeg = ProcessingClient.fileMemory("queued-jpeg", File(directory, "source.jpg")); memories.add(jpeg)
+                    payload.putParcelable("jpeg", jpeg)
+                    payload.putBoolean("depthEnabled", data.spec.depthEnabled)
+                }
+                check(!stopped())
+                val stats = Bundle()
+                val editData = File(directory, "portrait.bin")
+                val bytes = ProcessingClient.process(context, payload, stopped, stats) { memory ->
+                    val mapping = memory.mapReadOnly()
+                    try {
+                        PortraitData.decode(mapping)
+                        FileOutputStream(editData).use { output ->
+                            while (mapping.hasRemaining()) check(output.channel.write(mapping) > 0)
+                            output.fd.sync()
+                        }
+                    } finally { SharedMemory.unmap(mapping) }
+                }
+                check(!stopped())
+                if (payload.getInt("mode") == 2) {
+                    PortraitStore.prepare(context, id, File(directory, "source.jpg"), editData, data.spec)
+                    prepared()
+                }
+                val file = File(directory, "result.jpg")
+                FileOutputStream(file).use { it.write(ProcessedJpeg.metadata(bytes, data.spec)); it.fd.sync() }
+                if (BuildConfig.DEBUG) developmentProfile(payload, data, stats)
+                return file.inputStream().use(PublicationRecovery::identity)
+            } finally { memories.forEach(SharedMemory::close) }
+        }
+
+        override fun save(id: String, data: Job, storage: String, stopped: () -> Boolean,
+                          created: (String) -> Unit, removed: (String) -> Unit): String =
+            PhotoFileStore.save(context, listOf(PhotoFileStore.Photo(File(directory(id), "result.jpg"), ".jpg", "image/jpeg")),
+                storage, Date(data.spec.capturedAt), data.spec.dateString, stopped,
+                removedPhoto = { removed(it.toString()) }) { created(it.toString()) }.single().uri.toString()
+
+        override fun beginLifetime(interrupt: () -> Unit) = PhotoProcessingLifetime.begin(context, interrupt)
+        override fun renewLifetime() = PhotoProcessingLifetime.renew()
+        override fun endLifetime(token: String) = PhotoProcessingLifetime.end(context, token)
+
+        override fun portraitCommit(id: String, uri: String) = PortraitStore.commit(context, id, Uri.parse(uri))
+        override fun portraitDiscard(id: String) = PortraitStore.discard(context, id)
+        override fun portraitRemove(uri: String) = PortraitStore.remove(context, Uri.parse(uri))
+        override fun purgePortraits() = PortraitStore.purgeDeleted(context)
+
+        override fun changed() { synchronized(lock) { version++; revision.postValue(version) } }
+
+        override fun failureNotification() = notifyFailure(R.string.photo_processing_failed)
+        override fun destinationLost() = notifyFailure(R.string.folder_not_found)
+
+        override fun clearFailureNotification() {
+            context.getSystemService(NotificationManager::class.java).cancel(13)
+        }
+
+        override fun storageFull() {
+            context.mainExecutor.execute {
+                android.widget.Toast.makeText(context, R.string.photo_storage_full, android.widget.Toast.LENGTH_LONG).show()
+            }
+        }
+
+        override fun log(message: String, error: Throwable) = logFailure(message, error)
+    }
+
+    private fun developmentProfile(payload: Bundle, data: Job, stats: Bundle) {
+        val profile = JSONObject().put("mode", payload.getInt("mode")).put("depthEnabled", data.spec.depthEnabled)
+            .put("cameraPermission", stats.getInt("cameraPermission", -999))
+        for (key in listOf("processMs", "nativeMs", "decodeMs", "modelMs", "inferenceMs", "depthInferenceMs", "neuralDenoiseMs", "encodeMs", "jpegStagePssKiB")) profile.put(key, stats.getLong(key))
+        for (key in listOf("effectiveFrames", "colorErrorBefore", "colorErrorAfter", "colorInliers")) profile.put(key, stats.getDouble(key))
+        profile.put("colorMatchApplied", stats.getBoolean("colorMatchApplied"))
+        profile.put("edgeAwareDemosaic", stats.getBoolean("edgeAwareDemosaic"))
+        profile.put("frequencyDenoise", stats.getBoolean("frequencyDenoise"))
+        profile.put("steadyPhotoFinish", stats.getBoolean("steadyPhotoFinish"))
+        profile.put("rawShadingApplied", stats.getBoolean("rawShadingApplied"))
+        profile.put("jpegRejectedFrames", stats.getDouble("jpegRejectedFrames"))
+        profile.put("jpegMaximumShift", stats.getDouble("jpegMaximumShift"))
+        try { atomic(File(File(context.filesDir, "processing-test").apply { mkdirs() }, "photo-profile-" + data.spec.capturedAt + ".json"), profile) }
+        catch (error: Exception) { Log.w("PhotoProcessingQueue", "Unable to write development profile", error) }
+    }
 
     private fun atomic(file: File, value: JSONObject) {
         val bytes = value.toString().toByteArray(); require(bytes.size <= MAX_PLAN)
@@ -584,194 +504,62 @@ internal object PhotoProcessingQueue {
         decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
     }
 
-    private fun finishPublication(job: Job, item: CapturedItem) {
-        if(job.plan.optBoolean("portraitPrepared"))PortraitStore.commit(context,job.id,item.uri)
-        synchronized(lock) {
-            check(!job.stopped());job.ready=item;job.state="complete"
-            try {persist(job)} catch(error:Exception) {logFailure("Photo saved; journal update deferred",error)}
-        }
-    }
-
-    private fun readPublicationIdentity(json: JSONObject): PublicationRecovery.Identity? =
-        if(json.has("publicationBytes") && json.has("publicationSha256"))
-            PublicationRecovery.Identity(json.getLong("publicationBytes"),json.getString("publicationSha256")) else null
-
-    private fun publicationStatus(job: Job): PublicationRecovery.Status {
-        val uri=job.publication ?: return PublicationRecovery.Status.MISSING
-        val resolver=context.contentResolver
+    private fun publicationStatus(uri: Uri, publication: PhotoQueueCore.Publication): PublicationRecovery.Status {
+        val resolver = context.contentResolver
         return try {
-            if(uri.scheme!="content")return PublicationRecovery.Status.UNAVAILABLE
-            if(uri.authority==MediaStore.AUTHORITY) {
-                val row=bounded {resolver.query(uri,arrayOf(MediaStore.MediaColumns.DISPLAY_NAME,MediaStore.MediaColumns.IS_PENDING),null,it)}?.use {
-                    if(!it.moveToFirst())null else (if(it.isNull(0))null else it.getString(0)) to (it.getInt(1)!=0)
+            if (uri.scheme != "content") return PublicationRecovery.Status.UNAVAILABLE
+            if (uri.authority == MediaStore.AUTHORITY) {
+                val row = bounded { resolver.query(uri, arrayOf(MediaStore.MediaColumns.DISPLAY_NAME, MediaStore.MediaColumns.IS_PENDING), null, it) }?.use {
+                    if (!it.moveToFirst()) null else (if (it.isNull(0)) null else it.getString(0)) to (it.getInt(1) != 0)
                 } ?: return PublicationRecovery.Status.MISSING
-                val (name,pending)=row
-                val expected=job.publicationIdentity
+                val (name, pending) = row
+                val expected = publication.identity
                 // The written bytes, not the name, prove the row is ours: a provider may rename it.
-                val matches=expected!=null && (openBounded(uri)?.use {PublicationRecovery.matches(it,expected)} ?: false)
+                val matches = expected != null && (openBounded(uri)?.use { PublicationRecovery.matches(it, expected) } ?: false)
                 when {
                     matches && !pending -> PublicationRecovery.Status.COMPLETE
                     // A cancelled photo is never published by recovery: it stays pending for deletion.
-                    matches && job.cancelled.get() -> PublicationRecovery.Status.INCOMPLETE
+                    matches && publication.cancelled -> PublicationRecovery.Status.INCOMPLETE
                     matches -> {
                         // Fully written but still pending: publish it rather than redo the work.
-                        val cleared=resolver.update(uri,android.content.ContentValues().apply {put(MediaStore.MediaColumns.IS_PENDING,0)},null,null)>0
-                        if(cleared)PublicationRecovery.Status.COMPLETE else PublicationRecovery.Status.UNAVAILABLE
+                        val cleared = resolver.update(uri, android.content.ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 0) }, null, null) > 0
+                        if (cleared) PublicationRecovery.Status.COMPLETE else PublicationRecovery.Status.UNAVAILABLE
                     }
-                    name!="IMG_"+job.spec.dateString+".jpg" -> PublicationRecovery.Status.UNAVAILABLE
+                    name != publication.expectedName -> PublicationRecovery.Status.UNAVAILABLE
                     // Our name and published: complete, even if edited in place since.
                     !pending -> PublicationRecovery.Status.COMPLETE
                     else -> PublicationRecovery.Status.INCOMPLETE
                 }
             } else {
-                if(uri.authority!=Uri.parse(job.spec.storage).authority || !DocumentsContract.isDocumentUri(context,uri))
+                if (uri.authority != Uri.parse(publication.storage).authority || !DocumentsContract.isDocumentUri(context, uri))
                     return PublicationRecovery.Status.UNAVAILABLE
-                val row=bounded {resolver.query(uri,arrayOf(DocumentsContract.Document.COLUMN_DISPLAY_NAME,DocumentsContract.Document.COLUMN_SIZE),
-                    null,it)}?.use {if(!it.moveToFirst())null else
-                        (if(it.isNull(0))null else it.getString(0)) to (if(it.isNull(1))null else it.getLong(1))}
+                val row = bounded { resolver.query(uri, arrayOf(DocumentsContract.Document.COLUMN_DISPLAY_NAME, DocumentsContract.Document.COLUMN_SIZE),
+                    null, it) }?.use { if (!it.moveToFirst()) null else
+                        (if (it.isNull(0)) null else it.getString(0)) to (if (it.isNull(1)) null else it.getLong(1)) }
                     // No answer is only "missing" while the tree itself still answers (SD card, cloud).
-                    ?: return if(treeAnswers(uri))PublicationRecovery.Status.MISSING else PublicationRecovery.Status.UNAVAILABLE
-                val expected=job.publicationIdentity
-                if(!PublicationRecovery.mayOwnPartial(row.first,row.second,"IMG_"+job.spec.dateString+".jpg",expected))
+                    ?: return if (treeAnswers(uri)) PublicationRecovery.Status.MISSING else PublicationRecovery.Status.UNAVAILABLE
+                val expected = publication.identity
+                if (!PublicationRecovery.mayOwnPartial(row.first, row.second, publication.expectedName, expected))
                     return PublicationRecovery.Status.UNAVAILABLE
-                if(expected==null) {
+                if (expected == null) {
                     // Legacy SAF journals cannot prove completion. Delete only
                     // when cancelled or recoverable from retained inputs.
-                    if(job.cancelled.get() || inputsValid(job))PublicationRecovery.Status.INCOMPLETE
+                    if (publication.cancelled || publication.inputsValid()) PublicationRecovery.Status.INCOMPLETE
                     else PublicationRecovery.Status.UNAVAILABLE
                 } else openBounded(uri)?.use {
-                    if(PublicationRecovery.matches(it,expected))PublicationRecovery.Status.COMPLETE else PublicationRecovery.Status.INCOMPLETE
+                    if (PublicationRecovery.matches(it, expected)) PublicationRecovery.Status.COMPLETE else PublicationRecovery.Status.INCOMPLETE
                 } ?: PublicationRecovery.Status.UNAVAILABLE
             }
-        } catch(_:java.io.FileNotFoundException) {
+        } catch (_: java.io.FileNotFoundException) {
             // Document providers report a deleted document this way, MediaStore never does.
-            if(uri.authority!=MediaStore.AUTHORITY && treeAnswers(uri))PublicationRecovery.Status.MISSING else PublicationRecovery.Status.UNAVAILABLE
-        } catch(_:IllegalArgumentException) {
-            if(uri.authority!=MediaStore.AUTHORITY && treeAnswers(uri))PublicationRecovery.Status.MISSING else PublicationRecovery.Status.UNAVAILABLE
-        } catch(_:Exception) { PublicationRecovery.Status.UNAVAILABLE }
-    }
-
-    /** Provider I/O is serialized per job and never runs under the queue lock. */
-    /**
-     * The process can die after MediaStore created the row but before the journal recorded it.
-     * Find such a row by its name and folder: adopt it if it holds exactly the finished photo,
-     * otherwise delete it (pending rows are only visible to their owner).
-     */
-    private fun adoptOrphan(job: Job) {
-        val expected=job.publicationIdentity ?: return
-        // Pending rows can only be matched by name from Android 11.
-        if(android.os.Build.VERSION.SDK_INT<30 || job.publication!=null ||
-            job.spec.storage!=app.grapheneos.camera.CamConfig.SettingValues.Default.STORAGE_LOCATION) return
-        val resolver=context.contentResolver
-        val args=android.os.Bundle().apply {
-            putString(android.content.ContentResolver.QUERY_ARG_SQL_SELECTION,
-                MediaStore.MediaColumns.DISPLAY_NAME+"=? AND "+MediaStore.MediaColumns.RELATIVE_PATH+"=?")
-            putStringArray(android.content.ContentResolver.QUERY_ARG_SQL_SELECTION_ARGS,
-                arrayOf("IMG_"+job.spec.dateString+".jpg",DEFAULT_MEDIA_STORE_CAPTURE_PATH+"/"))
-            @android.annotation.SuppressLint("InlinedApi") putInt(MediaStore.QUERY_ARG_MATCH_PENDING,MediaStore.MATCH_INCLUDE)
-        }
-        val rows=try {
-            bounded {resolver.query(app.grapheneos.camera.CamConfig.imageCollectionUri,arrayOf(MediaStore.MediaColumns._ID,MediaStore.MediaColumns.IS_PENDING),
-                args,it)}?.use {
-                val list=arrayListOf<Pair<Uri,Boolean>>()
-                while(it.moveToNext())list.add(android.content.ContentUris.withAppendedId(app.grapheneos.camera.CamConfig.imageCollectionUri,it.getLong(0)) to (it.getInt(1)!=0))
-                list
-            }
-        } catch(_:Exception) {null} ?: return
-        for((uri,pending) in rows) {
-            val matches=try {openBounded(uri)?.use {PublicationRecovery.matches(it,expected)} ?: false} catch(_:Exception) {false}
-            if(matches) { synchronized(lock) {job.publication=uri;persistQuietly(job)};return }
-            if(pending) try {resolver.delete(uri,null,null)} catch(_:Exception) { }
-        }
-    }
-
-    private fun reconcilePublication(job: Job): PublicationRecovery.Decision = synchronized(job.publicationLock) {
-        adoptOrphan(job)
-        val uri=job.publication ?: return@synchronized if(job.cancelled.get())PublicationRecovery.Decision.DISCARD else PublicationRecovery.Decision.RETRY
-        val status=publicationStatus(job)
-        val decision=PublicationRecovery.decide(status,job.cancelled::get) {
-            try {
-                val acknowledged=if(uri.authority==MediaStore.AUTHORITY)context.contentResolver.delete(uri,null,null)>0
-                    else DocumentsContract.deleteDocument(context.contentResolver,uri)
-                acknowledged || publicationStatus(job)==PublicationRecovery.Status.MISSING
-            } catch(_:Exception) {false}
-        }
-        if(decision in listOf(PublicationRecovery.Decision.RETRY,PublicationRecovery.Decision.DISCARD))clearPublication(job,uri)
-        decision
-    }
-
-    private fun clearPublication(job: Job, uri: Uri) = synchronized(lock) {
-        if(job.publication!=uri)return@synchronized
-        val identity=job.publicationIdentity
-        job.publication=null;job.publicationIdentity=null
-        try {persist(job)} catch(error:Exception) {job.publication=uri;job.publicationIdentity=identity;throw error}
-    }
-
-    private fun cleanupCancelled(job: Job) = synchronized(job.publicationLock) {
-        try {
-            PortraitStore.discard(context,job.id)
-            job.publication?.let {PortraitStore.remove(context,it)}
-            val decision=reconcilePublication(job)
-            if(decision!=PublicationRecovery.Decision.DISCARD) {
-                // Persist a small cancellation tombstone before deleting heavy
-                // private inputs. It never re-enters the processing queue.
-                val directory=File(root,"cancelled-"+job.id).apply {check(isDirectory || mkdir())}
-                val plan=JSONObject().put("metadata",JSONObject()).put("files",JSONArray())
-                val tombstone=Job(job.id,job.spec,plan,directory).apply {
-                    state="cancelled";cancelled.set(true);publication=job.publication;publicationIdentity=job.publicationIdentity
-                }
-                persist(tombstone)
-            }
-            job.directory.deleteRecursively()
-            synchronized(lock) {records.remove(job.id)};budget.release(job.id)
-        } catch(error:Exception) {
-            // Keep the original journal and URI if even tombstone persistence
-            // fails. A later launch can retry without inventing another output.
-            logFailure("Cancelled publication cleanup deferred",error)
-            // The journal stays on disk for the next launch. Drop the in-memory job and its budget now.
-            synchronized(lock) {records.remove(job.id)};budget.release(job.id)
-        }
-    }
-
-    private fun cleanupCancelledTombstones() {
-        val now=System.currentTimeMillis()
-        // Each tombstone is rechecked at most hourly, and given up after 30 days.
-        root.listFiles()?.filter {it.isDirectory && it.name.startsWith("cancelled-") && validId(it.name.removePrefix("cancelled-")) &&
-            now-it.lastModified()>=60*60*1000L}
-            ?.sortedBy {it.lastModified()}?.take(64).orEmpty().forEach {directory ->
-                try {
-                    val file=File(directory,"request.json");require(file.length() in 1..MAX_PLAN)
-                    val json=JSONObject(AtomicFile(file).openRead().use {it.readBytes().toString(Charsets.UTF_8)})
-                    require(json.getInt("schema")==1 && "cancelled-"+json.getString("id")==directory.name && json.getString("state")=="cancelled")
-                    val job=Job(json.getString("id"),ProcessedPhotoSpec.fromJson(json.getJSONObject("spec")),json.getJSONObject("plan"),directory).apply {
-                        state="cancelled";cancelled.set(true)
-                        publication=json.optString("publication").takeIf {it.isNotEmpty()}?.let(Uri::parse)
-                        publicationIdentity=readPublicationIdentity(json)
-                    }
-                    if(reconcilePublication(job)==PublicationRecovery.Decision.DISCARD ||
-                        now-job.spec.capturedAt>30L*24*60*60*1000)directory.deleteRecursively()
-                    else directory.setLastModified(System.currentTimeMillis())
-                } catch(_:Exception) {directory.setLastModified(System.currentTimeMillis())}
-            }
-    }
-
-    private fun prune() {
-        val old = synchronized(lock) { records.values.filter { it.state == "complete" }.sortedByDescending { it.spec.capturedAt }.drop(32).also { values -> values.forEach { records.remove(it.id) } } }
-        old.forEach { it.directory.deleteRecursively() }
-    }
-
-    /**
-     * Journal writes on failure paths. A full disk must not turn a failed photo into a crash
-     * loop: the in-memory state stays authoritative and the write is retried with the next change.
-     */
-    private fun persistQuietly(job: Job): Boolean = JournalWrite.quietly({ persist(job) }) { error ->
-        logFailure("Cannot write photo journal", error)
-        if (lowStorage()) storageFull()
+            if (uri.authority != MediaStore.AUTHORITY && treeAnswers(uri)) PublicationRecovery.Status.MISSING else PublicationRecovery.Status.UNAVAILABLE
+        } catch (_: IllegalArgumentException) {
+            if (uri.authority != MediaStore.AUTHORITY && treeAnswers(uri)) PublicationRecovery.Status.MISSING else PublicationRecovery.Status.UNAVAILABLE
+        } catch (_: Exception) { PublicationRecovery.Status.UNAVAILABLE }
     }
 
     private val providerTimer = java.util.concurrent.ScheduledThreadPoolExecutor(1).apply { removeOnCancelPolicy = true }
-    /** A provider that does not answer within 10 s is treated as unavailable, never as an answer. */
-    /** Runs a provider call that is cancelled after 10 s; the timer is withdrawn when it returns. */
+    /** Runs a provider call that is cancelled after 10 s, treated as unavailable rather than as an answer. */
     private inline fun <T> bounded(call: (android.os.CancellationSignal) -> T): T {
         val signal = android.os.CancellationSignal()
         val timer = providerTimer.schedule({ signal.cancel() }, 10, java.util.concurrent.TimeUnit.SECONDS)
@@ -790,25 +578,17 @@ internal object PhotoProcessingQueue {
             ?.use { it.moveToFirst() } ?: false
     } catch (_: Exception) { false }
 
-    private fun lowStorage(): Boolean = try { StatFs(root.path).availableBytes < MIN_FREE } catch (_: Exception) { true }
-
-    private fun storageFull() {
-        context.mainExecutor.execute {
-            android.widget.Toast.makeText(context, R.string.photo_storage_full, android.widget.Toast.LENGTH_LONG).show()
-        }
-    }
-
     /** Release builds log only the exception class: messages can carry paths and URIs. */
     private fun logFailure(message: String, error: Throwable) {
         if (BuildConfig.DEBUG) Log.w("PhotoProcessingQueue", message, error)
         else Log.w("PhotoProcessingQueue", message + ": " + error.javaClass.name)
     }
 
-    private fun failureNotification() {
+    private fun notifyFailure(text: Int) {
         val manager = context.getSystemService(NotificationManager::class.java)
         manager.createNotificationChannel(NotificationChannel("image_saver_error", context.getString(R.string.unable_to_save_image), NotificationManager.IMPORTANCE_HIGH))
         manager.notify(13, Notification.Builder(context, "image_saver_error").setSmallIcon(R.drawable.info)
-            .setContentTitle(context.getString(R.string.photo_processing_failed))
+            .setContentTitle(context.getString(text))
             .setContentIntent(PendingIntent.getActivity(context, 1,
                 Intent(context, app.grapheneos.camera.ui.activities.InAppGallery::class.java), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT))
             .setAutoCancel(true).build())
