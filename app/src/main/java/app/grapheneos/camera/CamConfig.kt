@@ -2717,8 +2717,8 @@ class CamConfig(private val mActivity: MainActivity) {
     }
 
     // probeOnMiss is false because tab refreshes must never pay for a vendor probe on the main
-    // thread (see loadTabs); an unprobed mode is left out of the tabs for now, exactly like a
-    // transiently-failed probe always was, and comes back on the refresh that follows its probe.
+    // thread (see loadTabs). An unprobed mode is left out of the tabs for now, like a failed
+    // probe, and comes back on the refresh that follows its probe.
     private fun availableModes(): Set<CameraMode> {
         return CameraMode.entries.filter {
             when (it) {
