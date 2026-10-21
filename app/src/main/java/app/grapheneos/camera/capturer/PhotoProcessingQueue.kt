@@ -468,6 +468,8 @@ internal object PhotoProcessingQueue {
         profile.put("rawShadingApplied", stats.getBoolean("rawShadingApplied"))
         profile.put("jpegRejectedFrames", stats.getDouble("jpegRejectedFrames"))
         profile.put("jpegMaximumShift", stats.getDouble("jpegMaximumShift"))
+        profile.put("jpegGain", stats.getDouble("jpegGain"))
+        stats.getDoubleArray("jpegBlackPedestal")?.let { profile.put("jpegBlackPedestal", JSONArray(it.toList())) }
         try { atomic(File(File(context.filesDir, "processing-test").apply { mkdirs() }, "photo-profile-" + data.spec.capturedAt + ".json"), profile) }
         catch (error: Exception) { Log.w("PhotoProcessingQueue", "Unable to write development profile", error) }
     }

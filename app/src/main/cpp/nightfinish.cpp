@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <memory>
 #include <thread>
 #include <vector>
 
@@ -39,10 +40,69 @@ template<class Function> void rows(int height, Function fn) {
     second.join();
 }
 float curve(float x, float k) { return x / std::max(.0001f, x + k * (1 - x)); }
+float decodeSrgb(float v) { return v <= .04045f ? v / 12.92f : std::pow((v + .055f) / 1.055f, 2.4f); }
+float encodeSrgb(float v) { return v <= .0031308f ? v * 12.92f : 1.055f * std::pow(v, 1 / 2.4f) - .055f; }
+// Linear-light tables for the merged-JPEG finish: decode by gamma code (x4), encode by sqrt(linear).
+struct Srgb {
+    std::array<float, 1021> decode{};
+    std::vector<float> encode = std::vector<float>(16385);
+    Srgb() {
+        for (int i = 0; i <= 1020; ++i) decode[size_t(i)] = decodeSrgb(i / 1020.f);
+        for (int i = 0; i <= 16384; ++i) { float r = i / 16384.f; encode[size_t(i)] = 255 * encodeSrgb(r * r); }
+    }
+    float toLinear(float code) const {
+        float x = std::clamp(code, 0.f, 255.f) * 4; int i = std::min(int(x), 1019); float u = x - i;
+        return decode[size_t(i)] + u * (decode[size_t(i + 1)] - decode[size_t(i)]);
+    }
+    float toCode(float linear) const {
+        float x = std::sqrt(std::clamp(linear, 0.f, 1.f)) * 16384; int i = std::min(int(x), 16383); float u = x - i;
+        return encode[size_t(i)] + u * (encode[size_t(i + 1)] - encode[size_t(i)]);
+    }
+};
+// The camera's black-level error shows as one linear offset per channel, largest in blue,
+// which its gains carry into every pixel. Neutralise it where the scene is darkest, in
+// 16x16 blocks of the finished planes, and only in a night scene with enough dark area.
+BlackPedestal measurePedestal(const Plane& y, const Plane& co, const Plane& cg, int w, int h, const Srgb& srgb) {
+    BlackPedestal result;
+    constexpr int block = 8;
+    struct Cell { float y, r, g, b; };
+    std::vector<Cell> cells;
+    std::vector<float> levels;
+    for (int by = 0; by + block <= h; by += block) for (int bx = 0; bx + block <= w; bx += block) {
+        double sy = 0, sa = 0, sb = 0;
+        for (int yy = by; yy < by + block; ++yy) for (int xx = bx; xx < bx + block; ++xx) {
+            int i = yy * w + xx; sy += y[size_t(i)]; sa += co[size_t(i)]; sb += cg[size_t(i)];
+        }
+        float my = float(sy / (block * block)), ma = float(sa / (block * block)), mb = float(sb / (block * block));
+        cells.push_back({my, srgb.toLinear(my + ma - mb), srgb.toLinear(my + mb), srgb.toLinear(my - ma - mb)});
+        levels.push_back(my);
+    }
+    if (cells.size() < 400) return result;
+    auto middle = levels.begin() + levels.size() / 2;
+    std::nth_element(levels.begin(), middle, levels.end());
+    if (*middle > 48) return result;
+    auto tenth = levels.begin() + levels.size() / 10;
+    std::nth_element(levels.begin(), tenth, levels.end());
+    float limit = std::min(*tenth, 24.f);
+    std::array<std::vector<float>, 3> excess;
+    for (const auto& c : cells) if (c.y <= limit) {
+        float luminance = .2126f * c.r + .7152f * c.g + .0722f * c.b;
+        excess[0].push_back(c.r - luminance); excess[1].push_back(c.g - luminance); excess[2].push_back(c.b - luminance);
+    }
+    if (excess[0].size() < cells.size() / 50) return result;
+    float offset[3];
+    for (int c = 0; c < 3; ++c) {
+        auto at = excess[size_t(c)].begin() + excess[size_t(c)].size() / 2;
+        std::nth_element(excess[size_t(c)].begin(), at, excess[size_t(c)].end());
+        offset[c] = std::clamp(*at, -.006f, .006f);
+    }
+    result = {true, offset[0], offset[1], offset[2]};
+    return result;
 }
-bool finish(uint32_t* pixels, int width, int height, float target, const std::atomic_bool& cancelled, float zoom, float aspect, const float* toneTargets, bool spatialNoise, bool highPrecisionInput, bool steadyPhotoFinish) {
+bool finishImpl(uint32_t* pixels, int width, int height, float target, const std::atomic_bool& cancelled, float zoom, float aspect, const float* toneTargets, bool spatialNoise, bool highPrecisionInput, bool steadyPhotoFinish, float jpegGain, BlackPedestal* pedestal) {
     if (!pixels || width < 8 || height < 8 || width > 8192 || height > 8192 || int64_t(width) * height > 16'000'000 ||
-        !std::isfinite(target) || target < 0 || target > 1 || !std::isfinite(zoom) || zoom < 1 || zoom > 100 || !std::isfinite(aspect) || aspect < 1 || aspect > 2) return false;
+        !std::isfinite(target) || target < 0 || target > 1 || !std::isfinite(zoom) || zoom < 1 || zoom > 100 || !std::isfinite(aspect) || aspect < 1 || aspect > 2 ||
+        !std::isfinite(jpegGain) || jpegGain < 0 || jpegGain > 4) return false;
     if (toneTargets) {
         for (int i = 0; i < 3; ++i)
             if (!std::isfinite(toneTargets[i]) || toneTargets[i] < 0 || toneTargets[i] > 1 || (i && toneTargets[i] < toneTargets[i - 1])) return false;
@@ -273,6 +333,15 @@ bool finish(uint32_t* pixels, int width, int height, float target, const std::at
             }
         }
     }
+    std::unique_ptr<Srgb> srgb;
+    BlackPedestal black;
+    if (jpegGain > 0) {
+        srgb = std::make_unique<Srgb>();
+        black = measurePedestal(smoothY, smoothCo, smoothCg, w, h, *srgb);
+        if (pedestal) *pedestal = black;
+    }
+    // Shoulder above the knee: slope 1 at the knee, gain times the knee-relative range maps to 1.
+    const float knee = .25f, shoulder = jpegGain > 1 ? (jpegGain - 1) / ((1 - knee) * (jpegGain - knee)) : 0;
     rows(height, [&](int y) {
         if (cancelled.load()) return;
         for (int x = 0; x < width; ++x) {
@@ -316,6 +385,21 @@ bool finish(uint32_t* pixels, int width, int height, float target, const std::at
                 float maximum = std::max({channels[0], channels[1], channels[2]});
                 if (maximum * scale > 255) scale = 255 / maximum;
             }
+            if (srgb) {
+                // Restore the withheld sensor gain on luminance in linear light: the full gain up
+                // to the knee, then a shoulder that maps the frames' white to white, so the
+                // highlights they still held roll off instead of clipping.
+                float linear[3], offsets[3] = {black.red, black.green, black.blue};
+                for (int c = 0; c < 3; ++c) linear[c] = std::max(0.f, srgb->toLinear(channels[c] * scale) - offsets[c]);
+                float luminance = .2126f * linear[0] + .7152f * linear[1] + .0722f * linear[2];
+                float lifted = jpegGain * luminance, over = lifted - knee;
+                if (over > 0) lifted = knee + over / (1 + over * shoulder);
+                float lift = luminance > 1e-7f ? lifted / luminance : jpegGain;
+                float peak = std::max({linear[0], linear[1], linear[2]}) * lift;
+                if (peak > 1) lift /= peak;
+                for (int c = 0; c < 3; ++c) channels[c] = srgb->toCode(linear[c] * lift);
+                scale = 1;
+            }
             uint32_t packed = 0xff000000;
             for (int c = 0; c < 3; ++c)
                 packed |= uint32_t(std::clamp(std::round(channels[c] * scale), 0.f, 255.f)) << ((2 - c) * 8);
@@ -323,5 +407,13 @@ bool finish(uint32_t* pixels, int width, int height, float target, const std::at
         }
     });
     return !cancelled.load();
+}
+}
+bool finish(uint32_t* pixels, int width, int height, float target, const std::atomic_bool& cancelled, float zoom, float aspect, const float* toneTargets, bool spatialNoise, bool highPrecisionInput, bool steadyPhotoFinish) {
+    return finishImpl(pixels, width, height, target, cancelled, zoom, aspect, toneTargets, spatialNoise, highPrecisionInput, steadyPhotoFinish, 0, nullptr);
+}
+bool finishJpeg(uint32_t* pixels, int width, int height, float gain, const std::atomic_bool& cancelled, BlackPedestal* pedestal) {
+    if (!std::isfinite(gain) || gain < 1 || gain > 4) return false;
+    return finishImpl(pixels, width, height, 0, cancelled, 1, 4.f / 3, nullptr, true, true, false, gain, pedestal);
 }
 }

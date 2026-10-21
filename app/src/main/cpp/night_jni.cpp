@@ -5,6 +5,7 @@
 #include "rawshading.h"
 #include <jni.h>
 #include <algorithm>
+#include <cmath>
 #include <new>
 #include <stdexcept>
 #include <vector>
@@ -45,18 +46,19 @@ Java_app_grapheneos_camera_capturer_RawNativeCore_addJpegMerge(JNIEnv* env,jclas
     catch(const std::exception&){fail(env,"java/lang/IllegalArgumentException","Invalid JPEG merge state");}
 }
 extern "C" JNIEXPORT jintArray JNICALL
-Java_app_grapheneos_camera_capturer_RawNativeCore_finishJpegMerge(JNIEnv* env,jclass,jlong task,jlong handle,jdoubleArray stats) {
-    if(!task||!handle||!stats||env->GetArrayLength(stats)<4){fail(env,"java/lang/IllegalArgumentException","Invalid JPEG merge result");return nullptr;}
+Java_app_grapheneos_camera_capturer_RawNativeCore_finishJpegMerge(JNIEnv* env,jclass,jlong task,jlong handle,jdoubleArray stats,jfloat gain) {
+    if(!task||!handle||!stats||env->GetArrayLength(stats)<8||!std::isfinite(gain)||gain<1||gain>4){fail(env,"java/lang/IllegalArgumentException","Invalid JPEG merge result");return nullptr;}
     try {
-        auto* state=jpegState(handle);std::vector<uint32_t> pixels;jpeg_burst::Stats measured;
-        if(!state->merger.finish(pixels,measured)||!night::finish(pixels.data(),state->width,state->height,0,*flag(task),1,4.f/3,nullptr,true)) {
+        auto* state=jpegState(handle);std::vector<uint32_t> pixels;jpeg_burst::Stats measured;night::BlackPedestal black;
+        if(!state->merger.finish(pixels,measured,true)||!night::finishJpeg(pixels.data(),state->width,state->height,gain,*flag(task),&black)) {
             fail(env,"java/lang/IllegalStateException","JPEG processing cancelled");return nullptr;
         }
         auto result=env->NewIntArray(jint(pixels.size()));if(!result)return nullptr;
         env->SetIntArrayRegion(result,0,jint(pixels.size()),reinterpret_cast<const jint*>(pixels.data()));
         if(env->ExceptionCheck())return nullptr;
-        double values[4]={measured.effectiveFrames,double(measured.rejectedFrames),measured.maximumAcceptedShift,double(measured.registration.size()+1)};
-        env->SetDoubleArrayRegion(stats,0,4,values);
+        double values[8]={measured.effectiveFrames,double(measured.rejectedFrames),measured.maximumAcceptedShift,double(measured.registration.size()+1),
+            black.applied?1.:0.,black.red,black.green,black.blue};
+        env->SetDoubleArrayRegion(stats,0,8,values);
         return env->ExceptionCheck()?nullptr:result;
     } catch(const std::bad_alloc&){fail(env,"java/lang/OutOfMemoryError","JPEG result allocation failed");}
     catch(const std::exception&){fail(env,"java/lang/IllegalArgumentException","Invalid JPEG merge state");}

@@ -103,6 +103,8 @@ internal object ProcessingClient {
                 putDouble("effectiveFrames", result.getDouble("effectiveFrames", 0.0))
                 putDouble("jpegRejectedFrames", result.getDouble("jpegRejectedFrames", 0.0))
                 putDouble("jpegMaximumShift", result.getDouble("jpegMaximumShift", 0.0))
+                putDouble("jpegGain", result.getDouble("jpegGain", 0.0))
+                result.getDoubleArray("jpegBlackPedestal")?.let { putDoubleArray("jpegBlackPedestal", it) }
                 putLong("jpegStagePssKiB", result.getLong("jpegStagePssKiB", 0))
             }
             val editData = result.getParcelable<SharedMemory>("portraitData")

@@ -21,7 +21,7 @@ public final class RawNativeCore {
     private static native int[] denoise(long handle,int[] source,int width,int height);
     private static native long createJpegMerge(long task, int width, int height);
     private static native void addJpegMerge(long task, long merger, int[] source);
-    private static native int[] finishJpegMerge(long task, long merger, double[] stats);
+    private static native int[] finishJpegMerge(long task, long merger, double[] stats, float gain);
     private static native void destroyJpegMerge(long merger);
 
     public static final class JpegMerger implements AutoCloseable {
@@ -35,9 +35,10 @@ public final class RawNativeCore {
             if (merger == 0 || owner.isCancelled()) throw new IllegalStateException("JPEG merger unavailable");
             addJpegMerge(task, merger, pixels);
         }
-        public synchronized int[] finish(double[] stats) {
+        /** gain: sensor gain the frames held back, restored in linear light (1 to 4). */
+        public synchronized int[] finish(double[] stats, float gain) {
             if (merger == 0 || owner.isCancelled()) throw new IllegalStateException("JPEG merger unavailable");
-            try { return finishJpegMerge(task, merger, stats); }
+            try { return finishJpegMerge(task, merger, stats, gain); }
             finally { close(); }
         }
         @Override public synchronized void close() {

@@ -302,7 +302,7 @@ bool Merger::add(const uint32_t* pixels,size_t count) {
     return !s.stop.load();
 }
 
-bool Merger::finish(std::vector<uint32_t>& output,Stats& stats) {
+bool Merger::finish(std::vector<uint32_t>& output,Stats& stats,bool highPrecision) {
     auto& s=*state_;
     if(s.finished||s.seen<1)throw std::logic_error("JPEG merge state");
     s.finished=true;if(s.stop.load())return false;
@@ -340,8 +340,12 @@ bool Merger::finish(std::vector<uint32_t>& output,Stats& stats) {
                 // but fully anchor clear local detail to the unwarped frame.
                 gain=std::max(gain,std::clamp((variance-1.25f*noise)/std::max(.75f*noise,.25f),0.f,1.f));if(sigma[c]>80)gain=1;
             }
-            auto sum=s.sums[i];float inv=1.f/s.counts[i];float averaged[3]={sum.r*inv,sum.g*inv,sum.b*inv};uint32_t ref=s.reference[i],packed=0xff000000u;
-            for(int c=0;c<3;c++){float original=float((ref>>(16-8*c))&255);int value=int(std::lround(averaged[c]+gain*(original-averaged[c])));packed|=uint32_t(std::clamp(value,0,255))<<(16-8*c);}
+            auto sum=s.sums[i];float inv=1.f/s.counts[i];float averaged[3]={sum.r*inv,sum.g*inv,sum.b*inv};uint32_t ref=s.reference[i],packed=highPrecision?0xc0000000u:0xff000000u;
+            for(int c=0;c<3;c++) {
+                float original=float((ref>>(16-8*c))&255),value=averaged[c]+gain*(original-averaged[c]);
+                if(highPrecision)packed|=uint32_t(std::clamp(int(std::lround(value*(1023.f/255))),0,1023))<<(20-10*c);
+                else packed|=uint32_t(std::clamp(int(std::lround(value)),0,255))<<(16-8*c);
+            }
             s.reference[i]=packed;
             }
         }

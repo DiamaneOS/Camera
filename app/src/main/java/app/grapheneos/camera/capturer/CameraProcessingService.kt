@@ -197,6 +197,8 @@ class CameraProcessingService : Service() {
                         require(frames.size in 2..8 && frames.sumOf { it.size.toLong() } <= 240L * 1024 * 1024)
                         val width = input.getInt("width"); val height = input.getInt("height")
                         require(width in 8..8192 && height in 8..8192 && width.toLong()*height <= 16_000_000)
+                        val gain = input.getFloat("jpegGain", 1f)
+                        require(gain in 1f..4f)
                         val source = IntArray(width*height)
                         var decodeMs = 0L; var nativeMs = 0L
                         var stagePssKiB = Debug.getPss()
@@ -221,15 +223,17 @@ class CameraProcessingService : Service() {
                                 nativeMs += SystemClock.elapsedRealtime()-startedNative
                                 stagePssKiB = maxOf(stagePssKiB, Debug.getPss())
                             }
-                            val measured = DoubleArray(4)
+                            val measured = DoubleArray(8)
                             val startedNative = SystemClock.elapsedRealtime()
-                            val pixels = merger.finish(measured)
+                            val pixels = merger.finish(measured, gain)
                             nativeMs += SystemClock.elapsedRealtime()-startedNative
                             bitmap = Bitmap.createBitmap(pixels, width, height, Bitmap.Config.ARGB_8888)
                             stagePssKiB = maxOf(stagePssKiB, Debug.getPss())
                             output.putDouble("effectiveFrames", measured[0])
                             output.putDouble("jpegRejectedFrames", measured[1])
                             output.putDouble("jpegMaximumShift", measured[2])
+                            output.putDouble("jpegGain", gain.toDouble())
+                            if (measured[4] > 0) output.putDoubleArray("jpegBlackPedestal", measured.copyOfRange(5, 8))
                         }
                         output.putLong("decodeMs", decodeMs); output.putLong("nativeMs", nativeMs)
                         output.putLong("jpegStagePssKiB", stagePssKiB)

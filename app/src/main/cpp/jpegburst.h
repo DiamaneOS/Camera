@@ -23,7 +23,8 @@ public:
     Merger(const Merger&) = delete;
     Merger& operator=(const Merger&) = delete;
     bool add(const uint32_t* argb, size_t pixels);
-    bool finish(std::vector<uint32_t>& output, Stats& stats);
+    // highPrecision returns RGB10 (bits 20, 10, 0) for night::finishJpeg, else ARGB8.
+    bool finish(std::vector<uint32_t>& output, Stats& stats, bool highPrecision = false);
 private:
     struct State;
     std::unique_ptr<State> state_;

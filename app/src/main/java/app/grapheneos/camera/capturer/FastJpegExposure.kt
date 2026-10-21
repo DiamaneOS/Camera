@@ -21,7 +21,7 @@ import kotlin.math.abs
 /** Capture-executor lease; the same camera's automatic options are restored before handoff. */
 @SuppressLint("UnsafeOptInUsageError")
 internal class FastJpegExposure private constructor(private val control: Camera2CameraControl,
-    private val original: CaptureRequestOptions, val profile: JSONObject,
+    private val original: CaptureRequestOptions, val profile: JSONObject, val restoreGain: Float,
     private val recover: () -> Unit) : AutoCloseable {
     private var applied = false
     private var restoreRequested = false
@@ -47,7 +47,7 @@ internal class FastJpegExposure private constructor(private val control: Camera2
     companion object {
         private val refused = ConcurrentHashMap.newKeySet<String>()
         fun prepare(owner: ImageCapturer, cancelled: AtomicBoolean, enhancedIspEvaluation: Boolean = false,
-                    nightIspEvaluation: Boolean = false,
+                    nightIspEvaluation: Boolean = false, nightHeadroom: Double = 1.0,
                     own: (FastJpegExposure) -> Unit): FastJpegExposure? {
             val config = owner.camConfig
             if (nightIspEvaluation && !config.softwareJpegNight) return null
@@ -78,7 +78,8 @@ internal class FastJpegExposure private constructor(private val control: Camera2
                 val limit = context.resources.getInteger(Res.integer.config_camera_night_isp_jpeg_max_exposure_ms)
                     .takeIf { it in 1..1000 }?.toLong()?.times(1_000_000)?.coerceAtMost(handheld) ?: handheld
                 JpegExposurePolicy.chooseNight(oldExposure, oldIso, oldBoost, exposureRange.lower,
-                    exposureRange.upper, isoRange.lower, isoRange.upper, boostRange.lower, boostRange.upper, limit)
+                    exposureRange.upper, isoRange.lower, isoRange.upper, boostRange.lower, boostRange.upper, limit,
+                    nightHeadroom)
             } else JpegExposurePolicy.choose(oldExposure, oldIso, oldBoost, exposureRange.lower,
                 exposureRange.upper, isoRange.lower, isoRange.upper, boostRange.lower, boostRange.upper)
             if (choice == null) return null
@@ -87,11 +88,11 @@ internal class FastJpegExposure private constructor(private val control: Camera2
             val control = Camera2CameraControl.from(camera.cameraControl)
             val profile = JSONObject().put("singleJpegCompensation", true).put("meteredExposureNs", oldExposure)
                 .put("meteredIso", oldIso).put("meteredBoost", oldBoost).put("requestedExposureNs", choice.exposureNs)
-                .put("requestedIso", choice.iso).put("requestedBoost", choice.boost)
+                .put("requestedIso", choice.iso).put("requestedBoost", choice.boost).put("restoreGain", choice.restoreGain)
             if (app.grapheneos.camera.BuildConfig.DEBUG &&
                 app.grapheneos.camera.BuildConfig.CAMERA_JPEG_BURST_EVALUATION && nightIspEvaluation)
                 profile.put("nightJpegEvaluation", true)
-            val lease = FastJpegExposure(control, control.getCaptureRequestOptions(), profile) {
+            val lease = FastJpegExposure(control, control.getCaptureRequestOptions(), profile, choice.restoreGain) {
                 owner.mActivity.runOnUiThread {
                     if (config.camera === camera) config.startCamera(forced = true, preserveCapture = true)
                 }

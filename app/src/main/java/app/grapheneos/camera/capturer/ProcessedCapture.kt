@@ -58,6 +58,29 @@ internal class ProcessedCapture(private val owner: ImageCapturer, metadata: Imag
         catch (error: Exception) { future.cancel(false); throw error }
     }
 
+    /** Share of near-white viewfinder pixels: lights the Night frames would clip at full gain. */
+    private fun previewClippedFraction(): Float {
+        val future = CompletableFuture<Bitmap?>()
+        context.mainExecutor.execute {
+            try { future.complete(if (!cancelled.get() && owner.isCurrent(this)) owner.mActivity.previewView.bitmap else null) }
+            catch (error: Exception) { future.completeExceptionally(error) }
+        }
+        val preview = try { future.get(2, TimeUnit.SECONDS) } catch (_: Exception) { future.cancel(false); null } ?: return 0f
+        try {
+            val row = IntArray(preview.width)
+            var clipped = 0L; var total = 0L
+            for (y in 0 until preview.height step 2) {
+                preview.getPixels(row, 0, preview.width, 0, y, preview.width, 1)
+                for (x in row.indices step 2) {
+                    val p = row[x]
+                    if (maxOf(p shr 16 and 255, p shr 8 and 255, p and 255) >= 250) clipped++
+                    total++
+                }
+            }
+            return if (total > 0) clipped.toFloat() / total else 0f
+        } finally { preview.recycle() }
+    }
+
     private fun samplePreview(rotation: Int): RawPreviewGuide {
         val preview = owner.mActivity.previewView.bitmap ?: return RawPreviewGuide(0f, null, null, rotation, null)
         var small: Bitmap? = null
@@ -111,8 +134,11 @@ internal class ProcessedCapture(private val owner: ImageCapturer, metadata: Imag
     fun start() {
         if (jpegBurst) executor.execute {
             try {
+                val clipped = if (nightJpeg) previewClippedFraction() else 0f
                 jpegExposure = FastJpegExposure.prepare(owner, cancelled,
-                    enhancedIspEvaluation = !nightJpeg, nightIspEvaluation = nightJpeg) { jpegExposure = it }
+                    enhancedIspEvaluation = !nightJpeg, nightIspEvaluation = nightJpeg,
+                    nightHeadroom = JpegExposurePolicy.nightHeadroom(clipped)) { jpegExposure = it }
+                jpegExposure?.profile?.put("previewClippedFraction", clipped.toDouble())
                 val metadata = ImageCapture.Metadata().apply {
                     location = this@ProcessedCapture.location
                     isReversedHorizontal = horizontal; isReversedVertical = vertical
@@ -123,6 +149,7 @@ internal class ProcessedCapture(private val owner: ImageCapturer, metadata: Imag
                     jpegExposure?.profile?.let { exposure ->
                         exposure.keys().forEach { key -> acquired.profile.put(key, exposure.get(key)) }
                     }
+                    acquired.payload.putFloat("jpegGain", jpegExposure?.restoreGain ?: 1f)
                     handoff(PhotoProcessingQueue.enqueue(reservation, spec(0, true), acquired.payload,
                         null, acquired.preview, acquired.profile, cancelled::get))
                 }

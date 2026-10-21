@@ -55,6 +55,7 @@ class ProcessingTestActivity : Activity() {
                         payload.putInt("mode", 4); payload.putParcelableArrayList("frames", ArrayList(memories))
                         payload.putInt("width", plan.getInt("width")); payload.putInt("height", plan.getInt("height"))
                         payload.putInt("quality", 95)
+                        if (plan.has("gain")) payload.putFloat("jpegGain", plan.getDouble("gain").toFloat())
                     }
                     "jpeg-neural" -> {
                         val image=File(root,"rgb.jpg")

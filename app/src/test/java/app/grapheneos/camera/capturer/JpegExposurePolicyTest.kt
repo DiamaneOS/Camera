@@ -61,5 +61,27 @@ class JpegExposurePolicyTest {
                     assertTrue(s.exposureNs.toDouble()*s.iso*s.boost/100/wanted in .9..1.1)
                 }
     }
+    @Test fun nightHeadroomHoldsBackOnlyAnalogGainAtTheSameExposure() {
+        val full=JpegExposurePolicy.chooseNight(60_000_000,4748,306,1000,340_000_000,100,1550,100,6400,100_000_000)!!
+        val held=JpegExposurePolicy.chooseNight(60_000_000,4748,306,1000,340_000_000,100,1550,100,6400,100_000_000,2.0)!!
+        assertEquals(full.exposureNs,held.exposureNs);assertEquals(full.boost,held.boost)
+        assertEquals(775,held.iso);assertEquals(1f,full.restoreGain,0f)
+        assertEquals(full.iso.toDouble(),held.iso*held.restoreGain.toDouble(),.5)
+        // Near the sensor's lowest analog gain only the remaining range is held back.
+        val low=JpegExposurePolicy.chooseNight(30_000_000,800,100,1000,500_000_000,100,1600,100,6400,125_000_000,2.0)!!
+        assertEquals(100,low.iso);assertEquals(1.92f,low.restoreGain,.01f)
+        val floor=JpegExposurePolicy.chooseNight(30_000_000,500,100,1000,500_000_000,100,1600,100,6400,125_000_000,2.0)!!
+        assertEquals(100,floor.iso);assertEquals(1.2f,floor.restoreGain,.01f)
+    }
+    @Test fun nightHeadroomOnlyForClippedViewfinderLights() {
+        assertEquals(1.0,JpegExposurePolicy.nightHeadroom(0f),0.0)
+        assertEquals(1.0,JpegExposurePolicy.nightHeadroom(.00005f),0.0)
+        assertEquals(2.0,JpegExposurePolicy.nightHeadroom(.0001f),0.0)
+        assertEquals(2.0,JpegExposurePolicy.nightHeadroom(.02f),0.0)
+        assertEquals(1.0,JpegExposurePolicy.nightHeadroom(Float.NaN),0.0)
+    }
+    @Test(expected=IllegalArgumentException::class) fun invalidHeadroomIsRejected() {
+        JpegExposurePolicy.chooseNight(60_000_000,4748,306,1000,340_000_000,100,1550,100,6400,100_000_000,.5)
+    }
     @Test(expected=IllegalArgumentException::class) fun invalidMeteringIsRejected() {choose(exposure=0)}
 }
