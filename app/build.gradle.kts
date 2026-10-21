@@ -4,6 +4,7 @@ import java.security.MessageDigest
 import java.util.zip.ZipEntry
 import java.util.zip.ZipFile
 import java.util.zip.ZipInputStream
+import java.util.zip.GZIPInputStream
 import java.util.zip.ZipOutputStream
 
 val keystorePropertiesFile = rootProject.file("keystore.properties")
@@ -129,22 +130,28 @@ val portraitRuntimeJar = files(portraitRuntimeDir.map { it.file("portrait-cpu.ja
 val portraitCompiledApiJar = files(portraitRuntimeDir.map { it.file("portrait-compiled-api.jar") }).builtBy(preparePortraitRuntime)
 tasks.named("preBuild").configure { dependsOn(preparePortraitRuntime) }
 
+// The depth model is checked unpacked (export_depth.py). Its gzip bytes may vary with zlib.
+// Not named .gz: the Android Gradle plugin would unpack that into an uncompressed asset.
 val verifyPortraitModels = tasks.register("verifyPortraitModels") {
     val expected = mapOf(
         "portrait_subject_v1.tflite" to (6_227_884L to "e24338a717c1b7ad8d159666677ef400babb7f33b8ad60c4d96db4ecf694cd25"),
-        "portrait_depth_v2_small.tflite" to (98_928_904L to "0bb8192ef8affcb956f6b1577b3ba3207238357f1fc2516211e0e2b8ff86381c"),
+        "portrait_depth_v2_small.tflite.gzip" to (98_814_896L to "72ba875d48c520c3ced0cd10782f81fab5764c24c34ee7620e9d3e075a866de5"),
     )
     val models = expected.keys.map { file("src/main/assets/$it") }
     inputs.files(models)
     doLast {
         for (model in models) {
             val pin = expected.getValue(model.name)
-            check(model.length() == pin.first) { "Portrait model size mismatch" }
             val digest = MessageDigest.getInstance("SHA-256")
-            model.inputStream().use { stream ->
+            var total = 0L
+            model.inputStream().buffered().let { if (model.name.endsWith(".gzip")) GZIPInputStream(it) else it }.use { stream ->
                 val buffer = ByteArray(1024 * 1024)
-                while (true) { val count = stream.read(buffer); if (count < 0) break; digest.update(buffer, 0, count) }
+                while (total <= pin.first) {
+                    val count = stream.read(buffer); if (count < 0) break
+                    digest.update(buffer, 0, count); total += count
+                }
             }
+            check(total == pin.first) { "Portrait model size mismatch" }
             check(digest.digest().joinToString("") { "%02x".format(it.toInt() and 255) } == pin.second) { "Portrait model digest mismatch" }
         }
     }

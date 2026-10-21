@@ -31,12 +31,12 @@ public final class PortraitDepthEstimator implements AutoCloseable {
     }
 
     public PortraitDepthEstimator(ByteBuffer model) {
-        if (!model.isDirect() || model.remaining() != 98_928_904) throw new IllegalArgumentException("invalid depth model size");
+        if (!model.isDirect() || model.remaining() != PortraitDepthModel.BYTES) throw new IllegalArgumentException("invalid depth model size");
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256"); digest.update(model.duplicate());
             StringBuilder hash = new StringBuilder();
             for (byte value : digest.digest()) hash.append(String.format(java.util.Locale.ROOT, "%02x", value & 255));
-            if (!hash.toString().equals("0bb8192ef8affcb956f6b1577b3ba3207238357f1fc2516211e0e2b8ff86381c")) throw new IllegalArgumentException("depth model hash mismatch");
+            if (!hash.toString().equals(PortraitDepthModel.SHA256)) throw new IllegalArgumentException("depth model hash mismatch");
         } catch (NoSuchAlgorithmException error) { throw new IllegalStateException(error); }
         this.model = model;
         interpreter = new Interpreter(model, new Interpreter.Options().setNumThreads(2).setUseXNNPACK(true).setCancellable(true));

@@ -1,5 +1,6 @@
 package app.grapheneos.camera
 
+import app.grapheneos.camera.capturer.PortraitDepthModel
 import android.app.Service
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -36,10 +37,10 @@ class GpuBenchmarkService: Service() {
                 val pixels=IntArray(512*512);val map=input.mapReadOnly()
                 try {map.order(ByteOrder.nativeOrder()).asIntBuffer().get(pixels)} finally {SharedMemory.unmap(map)}
                 val depth=data.getBoolean("depth")
-                val name=if(depth) "portrait_depth_v2_small.tflite" else "portrait_subject_v1.tflite"
-                val bytes=assets.open(name).use {it.readBytes()}
+                val bytes=if(depth) assets.open(PortraitDepthModel.ASSET).use {PortraitDepthModel.read(it)}.let {m -> ByteArray(m.remaining()).also {m.get(it)}}
+                    else assets.open("portrait_subject_v1.tflite").use {it.readBytes()}
                 val hash=MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") {"%02x".format(it.toInt() and 255)}
-                check(if(depth) bytes.size==98_928_904 && hash=="0bb8192ef8affcb956f6b1577b3ba3207238357f1fc2516211e0e2b8ff86381c"
+                check(if(depth) bytes.size==PortraitDepthModel.BYTES && hash==PortraitDepthModel.SHA256
                     else bytes.size==6_227_884 && hash=="e24338a717c1b7ad8d159666677ef400babb7f33b8ad60c4d96db4ecf694cd25")
                 val side=if(depth) 518 else 512;val channels=if(depth) 3 else 4
                 val sampled=if(depth) {
@@ -65,12 +66,15 @@ class GpuBenchmarkService: Service() {
                     result.putLong("cpuMs",SystemClock.elapsedRealtime()-start)
                     output.rewind();output.asFloatBuffer().get(cpu)
                 }
+                // The depth model ships gzipped and CompiledModel loads assets by name, so depth stays CPU only here.
+                if(depth) {result.putString("gpu","skipped");result.putBoolean("success",true)}
+                else {
                 val options=CompiledModel.Options(Accelerator.GPU).apply {
                     gpuOptions=CompiledModel.GpuOptions(backend=CompiledModel.GpuOptions.Backend.OPENGL)
                 }
                 val start=SystemClock.elapsedRealtime()
                 android.util.Log.i("GpuTestStage","compile")
-                CompiledModel.create(assets,name,options).use { model ->
+                CompiledModel.create(assets,"portrait_subject_v1.tflite",options).use { model ->
                     result.putLong("gpuCompileMs",SystemClock.elapsedRealtime()-start)
                     val inputs=model.createInputBuffers();val outputs=model.createOutputBuffers()
                     try {
@@ -90,6 +94,7 @@ class GpuBenchmarkService: Service() {
                         result.putDouble("meanAbsDifference",gpu.indices.sumOf {abs(gpu[it]-cpu[it]).toDouble()}/gpu.size)
                         result.putBoolean("success",true)
                     } finally {inputs.forEach {it.close()};outputs.forEach {it.close()}}
+                }
                 }
             } catch(error:Throwable) {result.putString("errorType",error.javaClass.simpleName);result.putString("error",error.message?.take(250))}
             finally {input.close()}

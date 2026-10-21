@@ -1,6 +1,6 @@
 {
   "purpose": "Pinned offline Portrait model and CPU runtime inputs",
-  "license": "See each artifact and bundled notices; the Qualcomm depth deployment artifact has a custom license.",
+  "license": "See each artifact and bundled notices.",
   "artifacts": [
     {
       "file": "magic_touch-v1.tflite",
@@ -27,13 +27,15 @@
       "generation": null
     },
     {
-      "file": "depth-anything-v2-small.tflite",
-      "asset": "portrait_depth_v2_small.tflite",
-      "url": "https://huggingface.co/qualcomm/Depth-Anything-V2/resolve/e9f477d3fcf7b78cdbce9b09b9ce109da783b375/Depth-Anything-V2.tflite",
-      "bytes": 98928904,
-      "sha256": "0bb8192ef8affcb956f6b1577b3ba3207238357f1fc2516211e0e2b8ff86381c",
-      "license": "Qualcomm AI Model & Software License (DEPLOYMENT_MODEL_LICENSE.pdf); original Small model Apache-2.0",
-      "deploymentLicenseSha256": "4409f93b0e82531303b3e10f52f1fdfb56467a25f05b7441c6bbd8bb8a64b42c"
+      "file": "depth_anything_v2_vits.pth",
+      "asset": "portrait_depth_v2_small.tflite.gzip",
+      "url": "https://huggingface.co/depth-anything/Depth-Anything-V2-Small/resolve/03876f8651c73a60fe4c2c48294e09fcb6838fcf/depth_anything_v2_vits.pth",
+      "bytes": 99218434,
+      "sha256": "715fade13be8f229f8a70cc02066f656f2423a59effd0579197bbf57860e1378",
+      "license": "Apache-2.0",
+      "export": "export_depth.py with requirements-export.txt",
+      "exportBytes": 98814896,
+      "exportSha256": "72ba875d48c520c3ced0cd10782f81fab5764c24c34ee7620e9d3e075a866de5"
     }
   ]
 }

@@ -1,7 +1,8 @@
-Depth Anything V2 Small
+Depth Anything V2 Small, authors' original checkpoint.
 Authors: Lihe Yang, Bingyi Kang, Zilong Huang, Xiaogang Xu, Jiashi Feng and Hengshuang Zhao
-Original model: https://huggingface.co/depth-anything/Depth-Anything-V2-Small (Apache-2.0)
-Qualcomm deployment conversion: https://huggingface.co/qualcomm/Depth-Anything-V2/tree/e9f477d3fcf7b78cdbce9b09b9ce109da783b375
-Deployment artifact is subject to the bundled Qualcomm AI Model & Software License, not Apache-2.0.
-Model SHA-256: 0bb8192ef8affcb956f6b1577b3ba3207238357f1fc2516211e0e2b8ff86381c
-Inputs and inference remain offline. No Qualcomm network or accelerator runtime is used.
+Weights: https://huggingface.co/depth-anything/Depth-Anything-V2-Small at 03876f8651c73a60fe4c2c48294e09fcb6838fcf (Apache-2.0)
+Original weights SHA256: 715fade13be8f229f8a70cc02066f656f2423a59effd0579197bbf57860e1378
+Local 518x518 RGB export with tools/portrait-reference/export_depth.py: ImageNet normalization inside,
+weights rounded to float16 and stored as float32, gzip. Builtin LiteRT operators.
+Model SHA256: 72ba875d48c520c3ced0cd10782f81fab5764c24c34ee7620e9d3e075a866de5
+Inputs and inference remain offline.

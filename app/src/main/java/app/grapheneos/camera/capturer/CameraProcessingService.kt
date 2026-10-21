@@ -8,10 +8,8 @@ import android.graphics.ImageDecoder
 import android.os.*
 import android.system.OsConstants
 import java.io.ByteArrayOutputStream
-import java.io.FileInputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
-import java.nio.channels.FileChannel
 import java.security.MessageDigest
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
@@ -138,16 +136,11 @@ class CameraProcessingService : Service() {
                         val foreground = mask.confidence.count { it > .5f }.toDouble() / mask.confidence.size
                         require(foreground in .005..0.95) { "Select a subject with a visible background" }
                         val depth = if (input.getBoolean("depthEnabled")) {
-                            assets.openFd("portrait_depth_v2_small.tflite").use { asset ->
-                                require(asset.length == 98_928_904L)
-                                FileInputStream(asset.fileDescriptor).channel.use { channel ->
-                                    val mapping = channel.map(FileChannel.MapMode.READ_ONLY, asset.startOffset, asset.length)
-                                    PortraitDepthEstimator(mapping).use {
-                                        depthTask = it
-                                        try { check(!native.isCancelled); it.estimate(image) }
-                                        finally { depthTask = null }
-                                    }
-                                }
+                            val depthModel = assets.open(PortraitDepthModel.ASSET).use { PortraitDepthModel.read(it) }
+                            PortraitDepthEstimator(depthModel).use {
+                                depthTask = it
+                                try { check(!native.isCancelled); it.estimate(image) }
+                                finally { depthTask = null }
                             }
                         } else null
                         output.putLong("depthInferenceMs", depth?.inferenceMs ?: 0)
