@@ -80,6 +80,12 @@ class JpegExposurePolicyTest {
         assertEquals(2.0,JpegExposurePolicy.nightHeadroom(.02f),0.0)
         assertEquals(1.0,JpegExposurePolicy.nightHeadroom(Float.NaN),0.0)
     }
+    @Test fun saturatedLightsCountByTheirBrightestChannel() {
+        // Sodium orange (255,170,60) and a red LED (255,40,40) clip in one channel only.
+        val histogram=LongArray(256).also { it[100]=9_990; it[255]=10 }
+        assertEquals(.001f,JpegExposurePolicy.nearWhiteFraction(histogram,250),1e-6f)
+        assertEquals(2.0,JpegExposurePolicy.nightHeadroom(JpegExposurePolicy.nearWhiteFraction(histogram,250)),0.0)
+    }
     @Test fun nearWhiteFractionCountsFromTheLensLevel() {
         val histogram=LongArray(256).also { it[100]=9_000; it[242]=600; it[252]=400 }
         assertEquals(.04f,JpegExposurePolicy.nearWhiteFraction(histogram,250),1e-6f)
