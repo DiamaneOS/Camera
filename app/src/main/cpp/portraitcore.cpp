@@ -221,8 +221,13 @@ bool render(const uint32_t* source, int width, int height, const float* mask,
     }
     auto fit = fitMatte(guide, alpha, w, h);
     auto& a = fit.a; auto& b = fit.b; auto& mi = fit.meanI; auto& ii = fit.meanII;
+    // The luma-guided matte also spreads onto background of the subject's brightness that
+    // touches it, which then stayed partly sharp as a spur. Keep it within about one mask
+    // cell of the segmentation: full where the mask is at least one half, none where it is zero.
+    auto reach = [&](float x, float y) { return std::clamp(2 * sample(mask, mw, mh, x * mw - .5f, y * mh - .5f), 0.f, 1.f); };
     Plane weight(n);
-    for (int i = 0; i < n; ++i) weight[i] = 1 - std::clamp(a[i] * guide[i] + b[i], 0.f, 1.f);
+    for (int i = 0; i < n; ++i)
+        weight[i] = 1 - std::min(std::clamp(a[i] * guide[i] + b[i], 0.f, 1.f), reach((i % w + .5f) / w, (i / w + .5f) / h));
     Plane depthA, depthB;
     if (useDepth) {
         Plane amount(n);
@@ -274,7 +279,8 @@ bool render(const uint32_t* source, int width, int height, const float* mask,
             int i = y * width + x;
             float sx = (x + .5f) * w / width - .5f, sy = (y + .5f) * h / height - .5f;
             float luminance = luma(source[i]);
-            float matte = std::clamp((sample(a.data(), w, h, sx, sy) * luminance + sample(b.data(), w, h, sx, sy) - .03f) / .94f, 0.f, 1.f);
+            float matte = std::min(std::clamp((sample(a.data(), w, h, sx, sy) * luminance + sample(b.data(), w, h, sx, sy) - .03f) / .94f, 0.f, 1.f),
+                reach((x + .5f) / width, (y + .5f) / height));
             float wanted = useDepth ? radius * std::clamp(sample(depthA.data(), w, h, sx, sy) * luminance + sample(depthB.data(), w, h, sx, sy), 0.f, 1.f) : radius;
             if (useDepth && sample(depth, dw, dh, (x + .5f) * dw / width - .5f, (y + .5f) * dh / height - .5f) >= focusLow - band)
                 wanted = 0;

@@ -118,5 +118,18 @@ int main() {
     assert(!portrait::previewControls(step.data(),rw,rh,liveMask.data(),rw,rh,liveDepth.data(),513,rh,.1f,.5f,controls.data(),cancel));
     assert(!portrait::previewControls(step.data(),rw,rh,liveMask.data(),rw,rh,liveDepth.data(),rw,rh,-.1f,.5f,controls.data(),cancel));
     std::cout<<"Live matte boundary error ratio "<<afterError/beforeError<<"\n";
+    {
+        // Background as bright as the subject and touching it must blur like the rest of
+        // the background, not stay sharp as a spur along the subject's side.
+        const int sw=256,sh=256,smw=32,smh=32;
+        std::vector<uint32_t> strip(size_t(sw)*sh),stripOut(strip.size());std::vector<float> stripMask(size_t(smw)*smh);
+        auto inside=[](int x,int y){return x>=64 && x<128 && y>=32 && y<224;};
+        for(int y=0;y<sh;++y)for(int x=0;x<sw;++x)
+            strip[size_t(y)*sw+x]=0xff000000u|uint32_t(inside(x,y)?225:(y>=112 && y<144)?220:60)*0x10101u;
+        for(int y=0;y<smh;++y)for(int x=0;x<smw;++x)stripMask[size_t(y)*smw+x]=inside(x*8+4,y*8+4);
+        assert(portrait::render(strip.data(),sw,sh,stripMask.data(),smw,smh,8,stripOut.data(),cancel));
+        auto step=[&](int x){return int(stripOut[size_t(113)*sw+x]&255)-int(stripOut[size_t(109)*sw+x]&255);};
+        assert(step(132)<=step(180)*5/4);
+    }
     std::cout<<"Portrait native invariants passed\n";
 }
