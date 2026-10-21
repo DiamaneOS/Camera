@@ -389,6 +389,32 @@ open class MainActivity : AppCompatActivity(),
         lastFrame = previewView.bitmap
     }
 
+    /** Covers the preview with its last frame before an unbind, so no blank frame shows in between. */
+    fun showLastFrame() {
+        val frame = lastFrame ?: return
+        if (this is CaptureActivity) return
+        setBlurBitmapCompat(mainOverlay, frame)
+        mainOverlay.animate().cancel()
+        mainOverlay.alpha = 1f
+        mainOverlay.visibility = View.VISIBLE
+    }
+
+    /** Holds the previous camera's last frame over a rebind until the new camera has settled. */
+    internal val previewHold = app.grapheneos.camera.capturer.PreviewSettle.Hold()
+
+    internal fun previewSettled(generation: Long) {
+        if (previewHold.settle(generation) && previewView.previewStreamState.value == StreamState.STREAMING) revealPreview()
+    }
+
+    private fun revealPreview() {
+        if (mainOverlay.visibility != View.VISIBLE) return
+        mainOverlay.animate().cancel()
+        mainOverlay.animate().alpha(0f).setDuration(120).withEndAction {
+            mainOverlay.visibility = View.INVISIBLE
+            mainOverlay.alpha = 1f
+        }.start()
+    }
+
     private fun animateFocusRing(x: Float, y: Float) {
 
         // Move the focus ring so that its center is at the tap location (x, y)
@@ -692,7 +718,12 @@ open class MainActivity : AppCompatActivity(),
         timerView = binding.timer
         previewView.previewStreamState.observe(this) { state: StreamState ->
             if (state == StreamState.STREAMING) {
-                mainOverlay.visibility = View.INVISIBLE
+                if (previewHold.streaming(android.os.SystemClock.elapsedRealtime())) {
+                    val generation = previewHold.current()
+                    handler.postDelayed({
+                        if (previewHold.expired(generation, android.os.SystemClock.elapsedRealtime())) revealPreview()
+                    }, app.grapheneos.camera.capturer.PreviewSettle.MAX_HOLD_MS)
+                } else revealPreview()
                 camConfig.reloadSettings()
                 if (!camConfig.isQRMode) {
                     previewGrid.visibility = View.VISIBLE
@@ -711,6 +742,8 @@ open class MainActivity : AppCompatActivity(),
                     setBlurBitmapCompat(mainOverlay, lastFrame)
                     settingsIcon.visibility = View.INVISIBLE
                     settingsIcon.isEnabled = false
+                    mainOverlay.animate().cancel()
+                    mainOverlay.alpha = 1f
                     mainOverlay.visibility = View.VISIBLE
                 }
             }

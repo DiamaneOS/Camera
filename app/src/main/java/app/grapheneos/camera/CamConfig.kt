@@ -320,6 +320,11 @@ class CamConfig(private val mActivity: MainActivity) {
     }
     val captureResults = CaptureResultMonitor { result ->
         val now = SystemClock.elapsedRealtime()
+        val hold = mActivity.previewHold
+        if (hold.awaitingResult && app.grapheneos.camera.capturer.PreviewSettle.settled(result)) {
+            val generation = hold.current()
+            mActivity.mainExecutor.execute { mActivity.previewSettled(generation) }
+        }
         if(BuildConfig.DEBUG && result.get(CaptureResult.CONTROL_CAPTURE_INTENT)==android.hardware.camera2.CaptureRequest.CONTROL_CAPTURE_INTENT_STILL_CAPTURE) {
             app.grapheneos.camera.capturer.PortraitPreviewDiagnostics.stillCapturedAtMs=now
             app.grapheneos.camera.capturer.PortraitPreviewDiagnostics.stillNoiseReductionMode=result.get(CaptureResult.NOISE_REDUCTION_MODE) ?: -1
@@ -2229,8 +2234,10 @@ class CamConfig(private val mActivity: MainActivity) {
         // To use the last frame instead of showing a blank screen when
         // the camera that is being currently used gets unbind
         mActivity.updateLastFrame()
+        mActivity.showLastFrame()
 
         // Unbind/close all other camera(s) [if any]
+        mActivity.previewHold.disarm()
         cameraProvider?.unbindAll()
         closePreviewProcessing()
 
@@ -2497,6 +2504,7 @@ class CamConfig(private val mActivity: MainActivity) {
 
         if (slowMotion == null && appliedExtension == null) {
             Camera2Interop.Extender(previewBuilder).setSessionCaptureCallback(captureResults.forSession())
+            mActivity.previewHold.arm()
         }
         if(appliedExtension==null && slowMotion==null) {
             val nr=mActivity.resources.getInteger(R.integer.config_camera_preview_noise_reduction)
