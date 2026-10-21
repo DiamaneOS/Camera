@@ -68,66 +68,34 @@ internal class DirectRawBurst(
         val handler = Handler(thread.looper)
         val closed = AtomicBoolean()
         val lease=DirectCameraLease<CameraDevice>()
-        val recovered=CountDownLatch(1)
-        val finishing=AtomicBoolean()
         val recoveryHandler=Handler(android.os.Looper.getMainLooper())
-        var recoveryStarted=0L
-        var recoveryNotice=false
-        lateinit var recover: Runnable
-        recover=Runnable {
-            if(!closed.get() || recovered.count==0L)return@Runnable
-            if(lease.wasAcquired()) {
-                if(oldCamera.cameraInfo.cameraState.value?.type==CameraState.Type.CLOSED)lease.previousClosed()
-                else if(config.ownsDirectBurst(lease) && config.camera===oldCamera) {
-                    // Initial unbind may have thrown. Retry only for the graph
-                    // still owned by this lease, never a later replacement.
-                    try {config.cameraProvider?.unbindAll();config.camera=null} catch(_:Exception) { }
-                }
+        val closure = BurstClosure(lease, object : BurstClosure.Env {
+            override fun now() = SystemClock.elapsedRealtime()
+            override fun previousCameraClosed() = oldCamera.cameraInfo.cameraState.value?.type==CameraState.Type.CLOSED
+            override fun ownsPreviousBinding() = config.ownsDirectBurst(lease) && config.camera===oldCamera
+            override fun unbindPrevious() { config.cameraProvider?.unbindAll();config.camera=null }
+            override fun runOffMain(action: () -> Unit) = closureExecutor.execute(action)
+            override fun joinThread(): Boolean { thread.quitSafely();thread.join(1000);return !thread.isAlive }
+            override fun post(delayMs: Long, action: () -> Unit) { recoveryHandler.postDelayed(action,delayMs) }
+            override fun finish() {
+                if(config.finishDirectBurst(lease) && owner.mActivity.isStarted &&
+                    !owner.mActivity.isDestroyed && !owner.mActivity.isFinishing)
+                    config.startCamera(true,preserveCapture=true)
             }
-            if(lease.ready() && finishing.compareAndSet(false,true)) {
-                closureExecutor.execute {
-                    thread.quitSafely();thread.join(1000)
-                    if(thread.isAlive) {
-                        finishing.set(false);recoveryHandler.postDelayed(recover,250)
-                    } else recoveryHandler.post {
-                        try {
-                            if(config.finishDirectBurst(lease) && owner.mActivity.isStarted &&
-                                !owner.mActivity.isDestroyed && !owner.mActivity.isFinishing)
-                                config.startCamera(true,preserveCapture=true)
-                        } finally {recovered.countDown()}
-                    }
-                }
-            } else if(!finishing.get()) {
-                // Give up re-posting once the Activity is gone for good: nothing can rebind it.
-                if(owner.mActivity.isDestroyed && SystemClock.elapsedRealtime()-recoveryStarted>=30_000) {
-                    recovered.countDown();return@Runnable
-                }
-                if(!recoveryNotice && SystemClock.elapsedRealtime()-recoveryStarted>=3000 &&
-                    owner.mActivity.isStarted && !owner.mActivity.isDestroyed) {
-                    recoveryNotice=true;owner.mActivity.showMessage(app.grapheneos.camera.R.string.camera_recovery_unavailable)
-                }
-                recoveryHandler.postDelayed(recover,250)
-            }
-        }
-        val frames = ArrayBlockingQueue<Any>(4)
-        /**
-         * Handler thread: take every queued RAW image. While all reader slots are held, acquiring
-         * fails; the consumer posts another drain after each close, so no frame is left behind.
-         */
-        fun drainRaw(reader: ImageReader) {
-            while (true) {
-                val image = try { reader.acquireNextImage() } catch (error: IllegalStateException) {
-                    // Every slot is still held by the consumer, or the reader is closing.
-                    if (!closed.get()) Log.d("DirectRawBurst", "RAW reader full: " + error.javaClass.simpleName)
-                    return
-                } ?: return
-                if (closed.get() || cancelled.get() || !frames.offer(image)) image.close()
-            }
-        }
-        val results = ConcurrentHashMap<Long, CaptureResult>()
+            override fun activityDestroyed() = owner.mActivity.isDestroyed
+            override fun activityVisible() = owner.mActivity.isStarted && !owner.mActivity.isDestroyed
+            override fun notifySlowRecovery() = owner.mActivity.showMessage(app.grapheneos.camera.R.string.camera_recovery_unavailable)
+        })
+        val recovered = closure.recovered
+        var raw: ImageReader? = null
+        val frames = RawFrameQueue<Image, CaptureResult>(object : RawFrameQueue.Reader<Image> {
+            override fun acquire(): Image? = raw?.acquireNextImage()
+            override fun close(image: Image) = image.close()
+            override fun timestamp(image: Image) = image.timestamp
+            override fun requestDrain(drain: () -> Unit) { handler.post(drain) }
+        }, closed, cancelled, SystemClock::elapsedRealtime)
         var device: CameraDevice? = null
         var session: CameraCaptureSession? = null
-        var raw: ImageReader? = null
         var preview: ImageReader? = null
         val scene = photoFallback?.let { RawSceneStability() }
         var completed = false
@@ -157,17 +125,17 @@ internal class DirectRawBurst(
                     lease.arrived(camera)
                     camera.close()
                     val error = IllegalStateException("Burst camera disconnected")
-                    opened.offer(error); frames.offer(error)
+                    opened.offer(error); frames.fail(error)
                 }
                 override fun onError(camera: CameraDevice, error: Int) {
                     lease.arrived(camera)
                     camera.close()
                     val failure = IllegalStateException("Burst camera error $error")
-                    opened.offer(failure); frames.offer(failure)
+                    opened.offer(failure); frames.fail(failure)
                 }
                 override fun onClosed(camera: CameraDevice) {
                     lease.closed(camera)
-                    if(closed.get())recoveryHandler.post(recover)
+                    if(closed.get())recoveryHandler.post(closure::recover)
                 }
             }, handler)} catch(error:Exception) {lease.openFailed();throw error}
             val openedResult = opened.poll(5, TimeUnit.SECONDS)
@@ -186,7 +154,7 @@ internal class DirectRawBurst(
                 }, handler)
             }
             raw = ImageReader.newInstance(rawSize.width, rawSize.height, ImageFormat.RAW_SENSOR, 3).apply {
-                setOnImageAvailableListener({ drainRaw(it) }, handler)
+                setOnImageAvailableListener({ frames.drain() }, handler)
             }
             val configured = ArrayBlockingQueue<Any>(1)
             val outputs = listOf(OutputConfiguration(preview.surface), OutputConfiguration(raw.surface))
@@ -353,33 +321,16 @@ internal class DirectRawBurst(
             session.stopRepeating()
             val rawCallback = object : CameraCaptureSession.CaptureCallback() {
                 override fun onCaptureCompleted(s: CameraCaptureSession, r: CaptureRequest, result: TotalCaptureResult) {
-                    result.get(CaptureResult.SENSOR_TIMESTAMP)?.let { results[it] = result }
+                    result.get(CaptureResult.SENSOR_TIMESTAMP)?.let { frames.result(it, result) }
                 }
                 override fun onCaptureFailed(s: CameraCaptureSession, r: CaptureRequest, failure: CaptureFailure) {
-                    frames.offer(IllegalStateException("RAW burst frame failed"))
+                    frames.fail(IllegalStateException("RAW burst frame failed"))
                 }
                 override fun onCaptureBufferLost(s: CameraCaptureSession, r: CaptureRequest, target: android.view.Surface, frame: Long) {
-                    if (target == raw?.surface) frames.offer(IllegalStateException("RAW burst buffer lost"))
+                    if (target == raw?.surface) frames.fail(IllegalStateException("RAW burst buffer lost"))
                 }
             }
-            fun nextRaw(deadline: Long, consume: (Image, CaptureResult) -> Unit) {
-                var frame: Any? = null
-                while (frame == null) {
-                    checkActive(); check(SystemClock.elapsedRealtime() < deadline) { "RAW burst timed out" }
-                    frame = frames.poll(100, TimeUnit.MILLISECONDS)
-                }
-                if (frame is Exception) throw frame
-                try {
-                    (frame as Image).use { image ->
-                        var result = results.remove(image.timestamp)
-                        while (result == null) {
-                            checkActive(); check(SystemClock.elapsedRealtime() < deadline) { "RAW burst metadata missing" }
-                            Thread.sleep(5); result = results.remove(image.timestamp)
-                        }
-                        consume(image, result)
-                    }
-                } finally { raw?.let { reader -> handler.post { if (!closed.get()) drainRaw(reader) } } }
-            }
+            fun nextRaw(deadline: Long, consume: (Image, CaptureResult) -> Unit) = frames.next(deadline, ::checkActive, consume)
             // A bounded, unsaved RAW probe checks actual sensor headroom rather
             // than guessing from a tone-mapped viewfinder. Re-probe at most once
             // when clipped: the final fusion inputs still have one fixed exposure.
@@ -485,14 +436,11 @@ internal class DirectRawBurst(
             completed = true
         } finally {
             closed.set(true)
-            recoveryStarted=SystemClock.elapsedRealtime()
+            closure.begin()
             try {session?.abortCaptures()} catch(_:Exception) { }
             try {session?.close()} catch(_:Exception) { }
             lease.requestClose().forEach {try {it.close()} catch(_:Exception) { }}
-            while(true) {
-                val image=frames.poll() ?: break
-                try {(image as? Image)?.close()} catch(_:Exception) { }
-            }
+            frames.close()
             // Listeners run on the handler: close both readers there, so neither closes
             // under a listener that is still reading an image.
             val readersClosed = CountDownLatch(1)
@@ -503,7 +451,7 @@ internal class DirectRawBurst(
             }
             if (!handler.post(closeReaders)) closeReaders.run()
             if (!readersClosed.await(2, TimeUnit.SECONDS)) Log.w("DirectRawBurst", "RAW readers closed late")
-            lease.resourcesClosed();recoveryHandler.post(recover)
+            lease.resourcesClosed();recoveryHandler.post(closure::recover)
             if (!recovered.await(3,TimeUnit.SECONDS)) {
                 // Frames already delivered stay valid: a slow rebind must not discard a finished burst.
                 if (completed) Log.w("DirectRawBurst", "Camera rebind is slow; closure recovery remains active")
