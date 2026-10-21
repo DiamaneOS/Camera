@@ -61,6 +61,11 @@
             android:process=":camera_processing" />
 
         <!-- The main activity of the app (supports all modes) -->
+        <provider android:name=".capturer.PortraitCapabilitiesProvider" android:authorities="${applicationId}.portrait" android:exported="true" />
+        <activity android:name=".ui.activities.ExternalPortraitEditorActivity" android:exported="true" android:theme="@style/Theme.App">
+            <intent-filter><action android:name="de.diamaneos.intent.action.EDIT_PORTRAIT" /><category android:name="android.intent.category.DEFAULT" /><data android:mimeType="image/jpeg" /></intent-filter>
+        </activity>
+        <activity android:name=".ui.activities.PortraitEditorActivity" android:exported="false" android:theme="@style/Theme.App" />
         <activity
             android:name=".ui.activities.MainActivity"
             android:taskAffinity=".ui.activities.MainActivity"

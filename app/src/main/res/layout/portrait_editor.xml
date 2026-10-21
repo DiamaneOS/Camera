@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:id="@+id/editor_root"
+    android:layout_width="match_parent" android:layout_height="match_parent"
+    android:orientation="vertical" android:background="?attr/colorSurface">
+    <com.google.android.material.appbar.MaterialToolbar
+        android:id="@+id/editor_toolbar"
+        android:layout_width="match_parent" android:layout_height="?attr/actionBarSize"
+        app:title="@string/edit_portrait" app:navigationIcon="@drawable/back"
+        app:navigationContentDescription="@string/abc_action_bar_up_description">
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/save_portrait"
+            style="?attr/borderlessButtonStyle"
+            android:layout_width="wrap_content" android:layout_height="48dp"
+            android:layout_gravity="end" android:layout_marginEnd="8dp"
+            android:text="@string/portrait_save_copy" android:enabled="false" />
+    </com.google.android.material.appbar.MaterialToolbar>
+    <LinearLayout android:id="@+id/editor_body" android:layout_width="match_parent"
+        android:layout_height="0dp" android:layout_weight="1" android:orientation="vertical">
+        <FrameLayout android:id="@+id/editor_image_frame" android:layout_width="match_parent"
+            android:layout_height="0dp" android:layout_weight="1" android:background="@android:color/black">
+            <app.grapheneos.camera.ui.PortraitEditPreview android:id="@+id/portrait_image" android:layout_width="match_parent"
+                android:layout_height="match_parent" android:scaleType="fitCenter" android:contentDescription="@string/preview" />
+            <ProgressBar android:id="@+id/editor_progress" android:layout_width="48dp"
+                android:layout_height="48dp" android:layout_gravity="center" />
+        </FrameLayout>
+        <ScrollView android:id="@+id/editor_controls" android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:fillViewport="true">
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:orientation="vertical" android:paddingHorizontal="24dp" android:paddingVertical="8dp">
+                <com.google.android.material.materialswitch.MaterialSwitch
+                    android:id="@+id/editor_blur_enabled" android:layout_width="match_parent"
+                    android:layout_height="wrap_content" android:minHeight="48dp"
+                    android:text="@string/portrait_blur_enabled" android:enabled="false" />
+                <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:text="@string/portrait_strength" android:labelFor="@id/editor_blur_strength" />
+                <com.google.android.material.slider.Slider android:id="@+id/editor_blur_strength"
+                    android:layout_width="match_parent" android:layout_height="wrap_content" android:minHeight="48dp"
+                    android:valueFrom="1" android:valueTo="20" android:stepSize="1" android:enabled="false"
+                    android:contentDescription="@string/portrait_strength" />
+                <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:text="@string/portrait_original_kept" android:textAppearance="?attr/textAppearanceBodySmall"
+                    android:paddingBottom="8dp" />
+            </LinearLayout>
+        </ScrollView>
+    </LinearLayout>
+</LinearLayout>

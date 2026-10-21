@@ -1,0 +1,8 @@
+Depth Anything V2 Small, authors' original checkpoint.
+Authors: Lihe Yang, Bingyi Kang, Zilong Huang, Xiaogang Xu, Jiashi Feng and Hengshuang Zhao
+Weights: https://huggingface.co/depth-anything/Depth-Anything-V2-Small at 03876f8651c73a60fe4c2c48294e09fcb6838fcf (Apache-2.0)
+Original weights SHA256: 715fade13be8f229f8a70cc02066f656f2423a59effd0579197bbf57860e1378
+Local 518x518 RGB export with tools/portrait-reference/export_depth.py: ImageNet normalization inside,
+weights rounded to float16 and stored as float32, gzip. Builtin LiteRT operators.
+Model SHA256: 72ba875d48c520c3ced0cd10782f81fab5764c24c34ee7620e9d3e075a866de5
+Inputs and inference remain offline.

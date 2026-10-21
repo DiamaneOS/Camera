@@ -92,3 +92,7 @@ lint/tmp/
 lint/reports/
 
 *.salive
+
+# Engineering/status documentation is maintained in diamaneos-private.
+/docs/
+/tools/*/README.md

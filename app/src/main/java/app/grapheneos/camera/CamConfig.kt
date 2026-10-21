@@ -459,6 +459,91 @@ class CamConfig(private val mActivity: MainActivity) {
     var imageCapture: ImageCapture? = null
         private set
 
+    private var nightZoom = 1f
+    var rawLensId: String?
+        get() = commonPref.getString("raw_lens_id_$lensFacing", null)
+        set(value) {
+            commonPref.edit { putString("raw_lens_id_$lensFacing", value) }
+            if (softwareNight) nightZoom = 1f
+        }
+
+    fun rawLenses(): List<RawLens> = rawCatalogCache.getOrPut(lensFacing) {
+        RawLensCatalog.lenses(cameraProvider?.availableCameraInfos ?: emptyList(), lensFacing)
+    }
+
+    fun selectableRawLenses(): List<RawLens> = rawLenses().let { lenses ->
+        if (softwareNight) lenses.filter { supportsNight(it.info) } else lenses
+    }
+
+    private fun selectedRawLens(): RawLens? = selectableRawLenses().let { lenses ->
+        lenses.firstOrNull { it.id == rawLensId } ?: lenses.firstOrNull()
+    }
+
+    private fun switchablePhysicalLenses(): List<RawLens> {
+        if (!usesPhysicalModeLens || lensFacing != CameraSelector.LENS_FACING_BACK) return emptyList()
+        val lenses = selectableRawLenses().filter { it.label == R.string.lens_main || it.label == R.string.lens_ultra_wide }
+        return if (wideDisplayScale() < 1f && lenses.any { it.label == R.string.lens_main } &&
+            lenses.any { it.label == R.string.lens_ultra_wide } && selectedRawLens()?.id in lenses.map { it.id }) lenses else emptyList()
+    }
+
+    private fun vendorModeAvailable(mode: CameraMode, facing: Int = lensFacing): Boolean =
+        isExtensionUsable(if (facing == CameraSelector.LENS_FACING_FRONT) FRONT_CAMERA_SELECTOR else REAR_CAMERA_SELECTOR,
+            facing, mode.extensionMode, probeOnMiss = false)
+
+    val softwareNight: Boolean get() = currentMode == CameraMode.NIGHT && !vendorModeAvailable(CameraMode.NIGHT)
+    val softwarePortrait: Boolean get() = currentMode == CameraMode.PORTRAIT && !vendorModeAvailable(CameraMode.PORTRAIT)
+
+    val enhancedPhotoAvailable: Boolean get() = mActivity !is CaptureActivity &&
+        lensFacing == CameraSelector.LENS_FACING_BACK &&
+        mActivity.resources.getBoolean(R.bool.config_camera_direct_raw_burst) &&
+        mActivity.resources.getBoolean(R.bool.config_camera_prefer_physical_main) &&
+        rawLenses().any { enhancedLensEnabled(it) && supportsNight(it.info) }
+    private fun enhancedLensEnabled(lens: RawLens): Boolean = when(lens.label) {
+        R.string.lens_main -> mActivity.resources.getBoolean(R.bool.config_camera_main_raw_burst)
+        R.string.lens_ultra_wide -> mActivity.resources.getBoolean(R.bool.config_camera_ultra_wide_burst)
+        else -> false
+    }
+    val softwarePhoto: Boolean get() = prefersPhysicalMain && prioritizeCaptureQuality &&
+        mActivity !is CaptureActivity && mActivity.resources.getBoolean(R.bool.config_camera_direct_raw_burst) &&
+        rawLenses().any { enhancedLensEnabled(it) && supportsNight(it.info) &&
+            ((physicalMainBound && it.label==R.string.lens_main) || (physicalWideBound && it.label==R.string.lens_ultra_wide)) }
+    val softwareFastPhoto: Boolean get() = prefersPhysicalMain && physicalWideBound && !prioritizeCaptureQuality &&
+        mActivity.resources.getBoolean(R.bool.config_camera_ultra_wide_jpeg_denoise)
+    val usesProcessingCapture: Boolean get() = softwareNight || softwarePortrait || softwarePhoto || softwareFastPhoto
+    val softwareJpegNight: Boolean get() = app.grapheneos.camera.capturer.IspJpegNight.enabled(mActivity) &&
+        softwareNight && lensFacing == CameraSelector.LENS_FACING_BACK && mActivity !is CaptureActivity &&
+        mActivity.resources.getBoolean(R.bool.config_camera_direct_raw_burst)
+    val softwareJpegBurst: Boolean get() = softwareJpegNight ||
+        (BuildConfig.DEBUG && BuildConfig.CAMERA_JPEG_BURST_EVALUATION &&
+            currentMode == CameraMode.CAMERA && !isVideoMode && mActivity !is CaptureActivity &&
+            lensFacing == CameraSelector.LENS_FACING_BACK && physicalWideBound &&
+            activePhotoOutputFormat == PhotoOutputFormat.JPEG && flashMode == ImageCapture.FLASH_MODE_OFF && !isTorchOn &&
+            (softwarePhoto || softwareFastPhoto))
+    val processingFrameCount: Int get() = if (softwarePortrait || softwareFastPhoto) 0 else if (softwarePhoto) 4 else 8
+
+    private val usesRawLens: Boolean get() = softwareNight ||
+        (currentMode == CameraMode.CAMERA && !isVideoMode && mActivity !is CaptureActivity && photoOutputFormat != PhotoOutputFormat.JPEG)
+
+    var photoOutputFormat: PhotoOutputFormat
+        get() = PhotoOutputFormat.stored(commonPref.getString("photo_output_format", null))
+        set(value) { commonPref.edit { putString("photo_output_format", value.name) } }
+
+    var supportedPhotoOutputFormats: List<PhotoOutputFormat> = listOf(PhotoOutputFormat.JPEG)
+        private set
+
+    var activePhotoOutputFormat = PhotoOutputFormat.JPEG
+        private set
+
+    /** The physical RAW lens of the current binding, if any. */
+    private var boundRawLensLabel: Int? = null
+
+    /** RAW phase of a split JPEG + RAW capture: ImageCapture is bound for RAW alone. */
+    internal var splitRawPhase = false
+
+    val splitsRawJpeg: Boolean get() = PhotoOutputFormat.splitsRawJpeg(activePhotoOutputFormat,
+        supportedPhotoOutputFormats, lensFacing == CameraSelector.LENS_FACING_BACK && boundRawLensLabel == R.string.lens_ultra_wide,
+        mActivity.resources.getBoolean(R.bool.config_camera_ultra_wide_split_raw_jpeg))
+
     var preview: Preview? = null
 
     val allowedFormats: ArrayList<BarcodeFormat> = arrayListOf()
@@ -2278,6 +2363,25 @@ class CamConfig(private val mActivity: MainActivity) {
             }
         }
 
+        val spatialLuma=if(currentMode==CameraMode.VIDEO)
+            (if(BuildConfig.DEBUG)diagnosticSpatialLuma else null)?.div(100f) ?:
+                (mActivity.resources.getInteger(R.integer.config_camera_video_preview_luma_denoise).coerceIn(0,100)/100f) else 0f
+        if(BuildConfig.DEBUG)app.grapheneos.camera.capturer.PortraitPreviewDiagnostics.spatialLumaApplied=(spatialLuma*100).toInt()
+        val retention=mActivity.resources.getInteger(R.integer.config_camera_preview_temporal_retention)
+        if(BuildConfig.DEBUG)Log.i("TemporalPreview","setup retention="+retention+" wide="+physicalWideBound+" unavailable="+temporalPreviewUnavailable+" mode="+currentMode.name)
+        if(retention in 1..80 && !temporalPreviewUnavailable && appliedExtension==null && slowMotion==null && forcedRate==null &&
+            // The filter does not depend on the still format, but CameraX refuses a preview
+            // effect beside a RAW ImageCapture. A split JPEG + RAW keeps it outside its RAW phase.
+            !cameraXRawBurst && (activePhotoOutputFormat==PhotoOutputFormat.JPEG || (splitsRawJpeg && !splitRawPhase)) &&
+            lensFacing==CameraSelector.LENS_FACING_BACK &&
+            (currentMode==CameraMode.VIDEO || currentMode in setOf(CameraMode.CAMERA,CameraMode.NIGHT) &&
+                // A logical camera zooms past 1x without a rebind: keep the effect whenever the
+                // wide lens is reachable and let the zoom decide whether it filters.
+                (physicalWideBound || photoLensScale<.999f ||
+                    (if (prefersPhysicalMain) requestedPhotoZoom<.999f else wideDisplayScale()<.999f)))) {
+            val generation=previewRecoveryGeneration
+            temporalPreview=app.grapheneos.camera.ui.TemporalPreviewEffect(retention/100f,spatialLuma) {temporalPreviewFailed(generation)}
+        }
         try {
             val baseSession = when {
                 slowMotion != null -> slowMotionSessionConfig(slowMotion)
