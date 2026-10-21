@@ -15,7 +15,7 @@ struct Stats {
     std::vector<std::array<double, 3>> registration;
 };
 
-// Private host prototype: bounded RGB8 temporal fusion, not a shipping backend.
+// Bounded RGB8 temporal fusion of camera JPEGs, used by Night on devices that opt in.
 class Merger {
 public:
     Merger(int width, int height, const std::atomic_bool& cancelled);

@@ -180,7 +180,7 @@ internal object PhotoProcessingQueue {
         try {
             check(!cancelled())
             if (payload.getInt("mode") == 4) {
-                check(BuildConfig.DEBUG && BuildConfig.CAMERA_JPEG_BURST_EVALUATION)
+                check(IspJpegNight.enabled(context))
                 require(jpeg == null && preview != null && frames.size in 2..4 && !payload.containsKey("rawShading"))
             }
             check(directory.mkdir())
@@ -507,7 +507,7 @@ internal object PhotoProcessingQueue {
             if (name == "shading.bin") { require(expected >= 24); shadingBytes = expected } else total += expected
         }
         val mode = job.plan.getJSONObject("metadata").getJSONObject("mode").getInt("value")
-        require(mode in 1..3 || (mode == 4 && BuildConfig.DEBUG && BuildConfig.CAMERA_JPEG_BURST_EVALUATION))
+        require(mode in 1..3 || (mode == 4 && IspJpegNight.enabled(context)))
         if (mode == 1 || mode == 4) {
             val count = names.count { it.startsWith("frame-") }
             require(count in 2..8 && "source.jpg" !in names)

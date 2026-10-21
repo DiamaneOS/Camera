@@ -18,7 +18,7 @@ import java.util.concurrent.TimeoutException
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLongArray
 
-/** Private evaluation acquisition. CameraX keeps its framing, AF and output geometry. */
+/** A bounded burst of the camera's JPEGs. CameraX keeps its framing, AF and output geometry. */
 internal class IspJpegBurst private constructor(val payload: Bundle, val preview: Bitmap,
     val profile: JSONObject, private val memories: List<SharedMemory>) : AutoCloseable {
     override fun close() { memories.forEach(SharedMemory::close); preview.recycle() }
@@ -28,16 +28,16 @@ internal class IspJpegBurst private constructor(val payload: Bundle, val preview
         fun capture(owner: ImageCapturer, count: Int, quality: Int, metadata: ImageCapture.Metadata,
                     cancelled: AtomicBoolean, current: () -> Boolean,
                     progress: (Int, Int) -> Unit): IspJpegBurst {
-            check(app.grapheneos.camera.BuildConfig.DEBUG && app.grapheneos.camera.BuildConfig.CAMERA_JPEG_BURST_EVALUATION)
-            require(count in 2..4)
             val context = owner.mActivity.applicationContext
+            check(IspJpegNight.enabled(context))
+            require(count in 2..4)
             val capture = checkNotNull(owner.camConfig.imageCapture)
             val directory = Files.createTempDirectory(context.cacheDir.toPath(), "isp-jpeg-").toFile()
             val memories = arrayListOf<SharedMemory>()
             var preview: Bitmap? = null
             var transferred = false
             val started = SystemClock.elapsedRealtime()
-            val metadataCursor = owner.camConfig.captureResults.debugCaptureCursor()
+            val metadataCursor = owner.camConfig.captureResults.captureCursor()
             val deadline = started + 20_000
             var width = 0; var height = 0; var total = 0L
             val files = List(count) { File(directory, "frame-$it.jpg") }
@@ -103,7 +103,7 @@ internal class IspJpegBurst private constructor(val payload: Bundle, val preview
                     profile.put("cameraXBufferWidth", info.resolution.width).put("cameraXBufferHeight", info.resolution.height)
                         .put("cameraXCropRect", org.json.JSONArray(listOf(info.cropRect.left, info.cropRect.top, info.cropRect.right, info.cropRect.bottom)))
                 }
-                val sensorFrames = owner.camConfig.captureResults.debugStillFrames(metadataCursor)
+                val sensorFrames = owner.camConfig.captureResults.stillFrames(metadataCursor)
                 val firstTimestamp = sensorFrames.firstOrNull()?.get(android.hardware.camera2.CaptureResult.SENSOR_TIMESTAMP) ?: 0L
                 profile.put("sensorFrames", org.json.JSONArray(sensorFrames.map { result ->
                     org.json.JSONObject().apply {

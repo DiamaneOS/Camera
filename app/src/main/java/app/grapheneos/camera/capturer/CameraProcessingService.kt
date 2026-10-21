@@ -188,7 +188,7 @@ class CameraProcessingService : Service() {
                         bitmap=Bitmap.createBitmap(clean,image.width,image.height,Bitmap.Config.ARGB_8888);image.recycle()
                     }
                     4 -> {
-                        check(app.grapheneos.camera.BuildConfig.DEBUG && app.grapheneos.camera.BuildConfig.CAMERA_JPEG_BURST_EVALUATION)
+                        check(IspJpegNight.enabled(this@CameraProcessingService))
                         val frames = input.getParcelableArrayList<SharedMemory>("frames") ?: error("Missing JPEG frames")
                         memories.addAll(frames)
                         require(frames.size in 2..8 && frames.sumOf { it.size.toLong() } <= 240L * 1024 * 1024)

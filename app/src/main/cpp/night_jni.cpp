@@ -8,9 +8,7 @@
 #include <new>
 #include <stdexcept>
 #include <vector>
-#ifdef CAMERA_JPEG_BURST_EVALUATION
-#include "../../debug/cpp/jpegburst.h"
-#endif
+#include "jpegburst.h"
 
 namespace {
 void fail(JNIEnv* env, const char* type, const char* message) {
@@ -18,17 +16,14 @@ void fail(JNIEnv* env, const char* type, const char* message) {
     if (exception) env->ThrowNew(exception, message);
 }
 std::atomic_bool* flag(jlong handle) { return reinterpret_cast<std::atomic_bool*>(static_cast<uintptr_t>(handle)); }
-#ifdef CAMERA_JPEG_BURST_EVALUATION
 struct JpegMergeState {
     int width, height;
     jpeg_burst::Merger merger;
     JpegMergeState(int w,int h,const std::atomic_bool& stop):width(w),height(h),merger(w,h,stop){}
 };
 JpegMergeState* jpegState(jlong handle) { return reinterpret_cast<JpegMergeState*>(static_cast<uintptr_t>(handle)); }
-#endif
 }
 
-#ifdef CAMERA_JPEG_BURST_EVALUATION
 extern "C" JNIEXPORT jlong JNICALL
 Java_app_grapheneos_camera_capturer_RawNativeCore_createJpegMerge(JNIEnv* env,jclass,jlong task,jint width,jint height) {
     if(!task){fail(env,"java/lang/IllegalArgumentException","Missing JPEG task");return 0;}
@@ -69,7 +64,6 @@ Java_app_grapheneos_camera_capturer_RawNativeCore_finishJpegMerge(JNIEnv* env,jc
 }
 extern "C" JNIEXPORT void JNICALL
 Java_app_grapheneos_camera_capturer_RawNativeCore_destroyJpegMerge(JNIEnv*,jclass,jlong handle) { delete jpegState(handle); }
-#endif
 
 extern "C" JNIEXPORT jlong JNICALL
 Java_app_grapheneos_camera_capturer_RawNativeCore_create(JNIEnv* env, jclass) {

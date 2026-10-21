@@ -36,6 +36,12 @@
     <!-- Optional steady Enhanced exposure extension; enable only after output detail/noise qualification. -->
     <bool name="config_camera_photo_steady_exposure">false</bool>
     <bool name="config_camera_edge_aware_demosaic">false</bool>
+    <!-- Night merges several of the camera's own JPEGs instead of RAW frames. For devices whose
+         processed JPEGs are cleaner than our RAW finishing; requires the direct RAW graph. -->
+    <bool name="config_camera_night_isp_jpeg">false</bool>
+    <!-- Longest frame for merged-JPEG Night. Some HALs switch long manual exposures to a
+         separate still path without their noise reduction. Zero keeps the handheld limit. -->
+    <integer name="config_camera_night_isp_jpeg_max_exposure_ms">0</integer>
     <!-- Night-only frequency response; qualify noise and weak texture before enabling. -->
     <bool name="config_camera_night_frequency_denoise">false</bool>
     <!-- Zero retains the conservative generic exposure limits. Qualified devices may override. -->

@@ -603,7 +603,7 @@ class CamConfig(private val mActivity: MainActivity) {
     val softwareFastPhoto: Boolean get() = prefersPhysicalMain && physicalWideBound && !prioritizeCaptureQuality &&
         mActivity.resources.getBoolean(R.bool.config_camera_ultra_wide_jpeg_denoise)
     val usesProcessingCapture: Boolean get() = softwareNight || softwarePortrait || softwarePhoto || softwareFastPhoto
-    val softwareJpegNight: Boolean get() = BuildConfig.DEBUG && BuildConfig.CAMERA_JPEG_BURST_EVALUATION &&
+    val softwareJpegNight: Boolean get() = app.grapheneos.camera.capturer.IspJpegNight.enabled(mActivity) &&
         softwareNight && lensFacing == CameraSelector.LENS_FACING_BACK && mActivity !is CaptureActivity &&
         mActivity.resources.getBoolean(R.bool.config_camera_direct_raw_burst)
     val softwareJpegBurst: Boolean get() = softwareJpegNight ||
@@ -2113,7 +2113,16 @@ class CamConfig(private val mActivity: MainActivity) {
 
     // Start the camera with latest hard configuration
     @Volatile var directBurstActive = false
-        internal set
+        private set
+    private var directBurstOwner: Any? = null
+    internal fun beginDirectBurst(owner: Any) {
+        check(!directBurstActive);directBurstOwner=owner;directBurstActive=true
+    }
+    internal fun ownsDirectBurst(owner: Any)=directBurstOwner===owner
+    internal fun finishDirectBurst(owner: Any): Boolean {
+        if(!ownsDirectBurst(owner))return false
+        directBurstOwner=null;directBurstActive=false;return true
+    }
     private var previewRecoveryGeneration=0L
 
     /** A stalled session must close before rebinding, rather than immediately reusing its graph. */
@@ -2223,7 +2232,9 @@ class CamConfig(private val mActivity: MainActivity) {
         if ((!softwareNight || softwareJpegNight) && (!softwarePhoto || softwareJpegBurst) && !isVideoMode &&
             mActivity.resources.getBoolean(R.bool.config_camera_jpeg_high_quality_noise_reduction)) {
             val info = Camera2CameraInfo.from(cameraProvider!!.getCameraInfo(cameraSelector))
-            val mode = if (softwareJpegBurst) android.hardware.camera2.CaptureRequest.NOISE_REDUCTION_MODE_FAST
+            // Photo bursts take FAST frames for cadence. Night frames keep HIGH_QUALITY: on some
+            // HALs FAST means no noise reduction at all, which the merge cannot make up for.
+            val mode = if (softwareJpegBurst && !softwareJpegNight) android.hardware.camera2.CaptureRequest.NOISE_REDUCTION_MODE_FAST
                 else android.hardware.camera2.CaptureRequest.NOISE_REDUCTION_MODE_HIGH_QUALITY
             if (info.getCameraCharacteristic(CameraCharacteristics.NOISE_REDUCTION_AVAILABLE_NOISE_REDUCTION_MODES)?.contains(mode) == true) {
                 qualifiedJpegQuality=mode == android.hardware.camera2.CaptureRequest.NOISE_REDUCTION_MODE_HIGH_QUALITY
