@@ -10,6 +10,13 @@ internal object JpegExposurePolicy {
     /** Analog gain held back in Night when the viewfinder shows clipped lights, so they stay
      *  below the 8-bit JPEG's white. Less analog gain weakens the HAL's own noise reduction,
      *  so scenes without such lights keep the full gain. */
+    /** Share of viewfinder luma (r + 2g + b) / 4 at or above [level], where the lens's stills clip. */
+    fun nearWhiteFraction(lumaHistogram: LongArray, level: Int): Float {
+        require(lumaHistogram.size == 256 && level in 200..255)
+        val total = lumaHistogram.sum()
+        return if (total > 0) (level..255).sumOf { lumaHistogram[it] }.toFloat() / total else 0f
+    }
+
     fun nightHeadroom(previewClippedFraction: Float): Double =
         if (previewClippedFraction.isFinite() && previewClippedFraction >= 1e-4f) 2.0 else 1.0
 

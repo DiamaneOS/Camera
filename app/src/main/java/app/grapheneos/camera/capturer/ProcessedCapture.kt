@@ -59,7 +59,7 @@ internal class ProcessedCapture(private val owner: ImageCapturer, metadata: Imag
     }
 
     /** Share of near-white viewfinder pixels: lights the Night frames would clip at full gain. */
-    private fun previewClippedFraction(): Float {
+    private fun previewClippedFraction(ultraWide: Boolean): Float {
         val future = CompletableFuture<Bitmap?>()
         context.mainExecutor.execute {
             try { future.complete(if (!cancelled.get() && owner.isCurrent(this)) owner.mActivity.previewView.bitmap else null) }
@@ -68,16 +68,21 @@ internal class ProcessedCapture(private val owner: ImageCapturer, metadata: Imag
         val preview = try { future.get(2, TimeUnit.SECONDS) } catch (_: Exception) { future.cancel(false); null } ?: return 0f
         try {
             val row = IntArray(preview.width)
-            var clipped = 0L; var total = 0L
+            val histogram = LongArray(256)
             for (y in 0 until preview.height step 2) {
                 preview.getPixels(row, 0, preview.width, 0, y, preview.width, 1)
                 for (x in row.indices step 2) {
                     val p = row[x]
-                    if (maxOf(p shr 16 and 255, p shr 8 and 255, p and 255) >= 250) clipped++
-                    total++
+                    histogram[((p shr 16 and 255) + 2 * (p shr 8 and 255) + (p and 255)) / 4]++
                 }
             }
-            return if (total > 0) clipped.toFloat() / total else 0f
+            if (app.grapheneos.camera.BuildConfig.DEBUG) try {
+                File(File(context.filesDir, "processing-test").apply { mkdirs() }, "night-preview-luma-$capturedAt.json")
+                    .writeText(org.json.JSONObject().put("ultraWide", ultraWide).put("luma", org.json.JSONArray(histogram.toList())).toString())
+            } catch (_: Exception) { }
+            val level = if (ultraWide) context.resources.getInteger(app.grapheneos.camera.R.integer.config_camera_night_ultra_wide_highlight_level)
+                .takeIf { it in 200..255 } ?: 250 else 250
+            return JpegExposurePolicy.nearWhiteFraction(histogram, level)
         } finally { preview.recycle() }
     }
 
@@ -134,7 +139,7 @@ internal class ProcessedCapture(private val owner: ImageCapturer, metadata: Imag
     fun start() {
         if (jpegBurst) executor.execute {
             try {
-                val clipped = if (nightJpeg) previewClippedFraction() else 0f
+                val clipped = if (nightJpeg) previewClippedFraction(config.ultraWideViewfinder) else 0f
                 jpegExposure = FastJpegExposure.prepare(owner, cancelled,
                     enhancedIspEvaluation = !nightJpeg, nightIspEvaluation = nightJpeg,
                     nightHeadroom = JpegExposurePolicy.nightHeadroom(clipped)) { jpegExposure = it }

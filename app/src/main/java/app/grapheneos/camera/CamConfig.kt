@@ -279,9 +279,12 @@ class CamConfig(private val mActivity: MainActivity) {
     private var diagnosticSpatialLuma:Int?=null
 
     fun closePreviewProcessing() {temporalPreview?.close();temporalPreview=null}
+    /** The rear ultra-wide feeds the viewfinder (its own physical camera or a zoom below 1x). */
+    val ultraWideViewfinder: Boolean get() = lensFacing==CameraSelector.LENS_FACING_BACK &&
+        (physicalWideBound || (zoomState?.zoomRatio ?: requestedPhotoZoom)<.999f)
     private fun refreshTemporalPreview() {
         val zoom=zoomState?.zoomRatio ?: requestedPhotoZoom
-        val wide=lensFacing==CameraSelector.LENS_FACING_BACK && (physicalWideBound || zoom<.999f)
+        val wide=ultraWideViewfinder
         temporalPreview?.parameters(wide && (!BuildConfig.DEBUG || diagnosticTemporalEnabled),kotlin.math.abs(zoom-temporalPreviewZoom)>.002f)
         temporalPreviewZoom=zoom
     }

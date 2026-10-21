@@ -80,6 +80,15 @@ class JpegExposurePolicyTest {
         assertEquals(2.0,JpegExposurePolicy.nightHeadroom(.02f),0.0)
         assertEquals(1.0,JpegExposurePolicy.nightHeadroom(Float.NaN),0.0)
     }
+    @Test fun nearWhiteFractionCountsFromTheLensLevel() {
+        val histogram=LongArray(256).also { it[100]=9_000; it[242]=600; it[252]=400 }
+        assertEquals(.04f,JpegExposurePolicy.nearWhiteFraction(histogram,250),1e-6f)
+        assertEquals(.1f,JpegExposurePolicy.nearWhiteFraction(histogram,240),1e-6f)
+        assertEquals(0f,JpegExposurePolicy.nearWhiteFraction(LongArray(256),240),0f)
+    }
+    @Test(expected=IllegalArgumentException::class) fun nearWhiteLevelIsBounded() {
+        JpegExposurePolicy.nearWhiteFraction(LongArray(256),150)
+    }
     @Test(expected=IllegalArgumentException::class) fun invalidHeadroomIsRejected() {
         JpegExposurePolicy.chooseNight(60_000_000,4748,306,1000,340_000_000,100,1550,100,6400,100_000_000,.5)
     }

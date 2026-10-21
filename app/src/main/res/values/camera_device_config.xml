@@ -45,6 +45,9 @@
     <!-- Longest frame for merged-JPEG Night. Some HALs switch long manual exposures to a
          separate still path without their noise reduction. Zero keeps the handheld limit. -->
     <integer name="config_camera_night_isp_jpeg_max_exposure_ms">0</integer>
+    <!-- Viewfinder luma at which the rear ultra-wide's merged-JPEG Night frames clip. A
+         viewfinder rendered darker than the stills needs a lower level. Other lenses use 250. -->
+    <integer name="config_camera_night_ultra_wide_highlight_level">250</integer>
     <!-- Night-only frequency response; qualify noise and weak texture before enabling. -->
     <bool name="config_camera_night_frequency_denoise">false</bool>
     <!-- Zero retains the conservative generic exposure limits. Qualified devices may override. -->

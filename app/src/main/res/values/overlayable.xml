@@ -22,6 +22,7 @@
             <item type="bool" name="config_camera_night_isp_jpeg" />
             <item type="bool" name="config_camera_ultra_wide_split_raw_jpeg" />
             <item type="integer" name="config_camera_night_isp_jpeg_max_exposure_ms" />
+            <item type="integer" name="config_camera_night_ultra_wide_highlight_level" />
             <item type="bool" name="config_camera_night_frequency_denoise" />
             <item type="bool" name="config_camera_jpeg_high_quality_noise_reduction" />
             <item type="string" name="config_camera_ultra_wide_raw_correction_grid" />

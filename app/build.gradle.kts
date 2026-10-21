@@ -294,6 +294,9 @@ android {
                 require(edge in 0..2160)
                 resValue("integer", "config_camera_preview_target_short_edge", edge.toString())
             }
+            providers.gradleProperty("cameraNightUltraWideHighlightLevel").orNull?.toInt()?.let { value ->
+                require(value in 200..255);resValue("integer","config_camera_night_ultra_wide_highlight_level",value.toString())
+            }
             for ((property,resource) in listOf("cameraNightIspJpegMs" to "config_camera_night_isp_jpeg_max_exposure_ms",
                 "cameraNightHandheldMs" to "config_camera_night_handheld_max_exposure_ms",
                 "cameraNightSteadyMs" to "config_camera_night_steady_max_exposure_ms")) {
