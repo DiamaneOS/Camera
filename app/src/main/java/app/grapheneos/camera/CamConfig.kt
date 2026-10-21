@@ -2769,19 +2769,6 @@ class CamConfig(private val mActivity: MainActivity) {
     // probeOnMiss is false because tab refreshes must never pay for a vendor probe on the main
     // thread (see loadTabs); an unprobed mode is left out of the tabs for now, exactly like a
     // transiently-failed probe always was, and comes back on the refresh that follows its probe.
-    private fun supportsNight(info: CameraInfo): Boolean {
-        val c = Camera2CameraInfo.from(info)
-        val caps = c.getCameraCharacteristic(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES) ?: return false
-        return CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_RAW in caps &&
-            CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_MANUAL_SENSOR in caps &&
-            c.getCameraCharacteristic(CameraCharacteristics.SENSOR_COLOR_TRANSFORM1) != null &&
-            c.getCameraCharacteristic(CameraCharacteristics.SENSOR_INFO_COLOR_FILTER_ARRANGEMENT) in 0..3 &&
-            c.getCameraCharacteristic(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
-                ?.getOutputSizes(android.graphics.ImageFormat.RAW_SENSOR)?.any {
-                    app.grapheneos.camera.capturer.ProcessingGeometry.supported(it.width,it.height,raw=true)
-                } == true
-    }
-
     private fun availableModes(): Set<CameraMode> {
         return CameraMode.entries.filter {
             when (it) {
