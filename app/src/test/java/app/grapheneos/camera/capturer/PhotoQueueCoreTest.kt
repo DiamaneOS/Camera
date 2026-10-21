@@ -88,7 +88,12 @@ class PhotoQueueCoreTest {
             }
             return null
         }
-        override fun destinationAvailable(storage: String) = storage in granted
+        val silent = hashSetOf<String>()
+        override fun destinationState(storage: String) = when (storage) {
+            in granted -> PhotoQueueCore.Destination.AVAILABLE
+            in silent -> PhotoQueueCore.Destination.UNKNOWN
+            else -> PhotoQueueCore.Destination.LOST
+        }
         val forgotten = arrayListOf<String>()
         override fun forgetDestination(storage: String) { forgotten += storage }
 
@@ -255,6 +260,23 @@ class PhotoQueueCoreTest {
         val ready = assertNotNullAndGet(published(relaunched, id))
         assertEquals("", io.rows.getValue(ready.uri).folder)
         assertEquals("", io.journals.getValue(id).destination)
+    }
+
+    @Test fun aFolderThatDoesNotAnswerIsNotTreatedAsLost() {
+        val io = FakeIo(); val queue = queue(io)
+        val folder = "content://tree/slow"
+        io.silent.add(folder)
+        val id = capture(queue, io, 8, folder)
+        assertEquals(0, io.processed)
+        assertTrue((queue.lookup(id) as PhotoQueueCore.Lookup.Pending).failed)
+        assertFalse(io.journals.getValue(id).destinationLost)
+        assertTrue(io.forgotten.isEmpty())
+        assertEquals(0, io.lostNotifications)
+        // Once the provider answers again a retry saves to the same folder.
+        io.silent.remove(folder); io.granted.add(folder)
+        assertEquals(PhotoQueueCore.RetryResult.STARTED, queue.retry(id))
+        val ready = assertNotNullAndGet(published(queue, id))
+        assertEquals(folder, io.rows.getValue(ready.uri).folder)
     }
 
     @Test fun aGrantedFolderIsUsedAsBefore() {

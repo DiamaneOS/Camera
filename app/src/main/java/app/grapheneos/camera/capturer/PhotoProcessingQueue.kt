@@ -16,6 +16,7 @@ import android.provider.DocumentsContract
 import android.provider.MediaStore
 import android.util.AtomicFile
 import android.util.Log
+import androidx.core.content.edit
 import androidx.lifecycle.LiveData
 import androidx.lifecycle.MutableLiveData
 import app.grapheneos.camera.BuildConfig
@@ -34,6 +35,9 @@ import java.util.concurrent.Executors
 internal object PhotoProcessingQueue {
     const val URI_SCHEME = "camera-processing"
     private const val MAX_PLAN = 256 * 1024
+    private const val QUEUE_PREFS = "photo_queue"
+    private const val PENDING_STORAGE_RESET = "pending_storage_reset"
+    private val resetExecutor = Executors.newSingleThreadExecutor()
     private val lock = Any()
     private val revision = MutableLiveData(0)
     val changes: LiveData<Int> = revision
@@ -137,6 +141,30 @@ internal object PhotoProcessingQueue {
     }
 
     fun resume() = core.resume()
+
+    /** An unlocked camera session applies a folder reset that a locked session only recorded,
+     *  unless the folder answers again by then. */
+    fun applyPendingStorageReset() {
+        val queuePrefs = context.getSharedPreferences(QUEUE_PREFS, Context.MODE_PRIVATE)
+        val storage = queuePrefs.getString(PENDING_STORAGE_RESET, null) ?: return
+        if (context.getSystemService(android.app.KeyguardManager::class.java).isDeviceLocked) return
+        resetExecutor.execute {
+            try {
+                if (AndroidIo.destinationState(storage) == PhotoQueueCore.Destination.LOST) resetStorageLocation(storage)
+            } catch (error: Exception) { logFailure("Cannot reset the storage location", error) }
+            finally { queuePrefs.edit { remove(PENDING_STORAGE_RESET) } }
+        }
+    }
+
+    private fun resetStorageLocation(storage: String) {
+        val prefs = context.getSharedPreferences(CamConfig.COMMON_SHARED_PREFS_NAME, Context.MODE_PRIVATE)
+        synchronized(lock) {
+            if (prefs.getString(CamConfig.SettingValues.Key.STORAGE_LOCATION, AndroidIo.defaultStorage) != storage) return
+            app.grapheneos.camera.CapturedItems.savePreviousSafTree(Uri.parse(storage), prefs)
+            prefs.edit().putString(CamConfig.SettingValues.Key.STORAGE_LOCATION, AndroidIo.defaultStorage).apply()
+            app.grapheneos.camera.CapturedItems.releaseUntrackedSafTrees(context, prefs)
+        }
+    }
 
     /** Returns a completed photo when deletion raced with publication; otherwise cancels this job. */
     fun cancel(id: String): CapturedItem? = core.cancel(id)?.let { CapturedItem(ITEM_TYPE_IMAGE, it.dateString, Uri.parse(it.uri)) }
@@ -358,22 +386,29 @@ internal object PhotoProcessingQueue {
             return null
         }
 
-        override fun destinationAvailable(storage: String): Boolean = try {
-            val tree = Uri.parse(storage)
+        override fun destinationState(storage: String): PhotoQueueCore.Destination {
+            val tree = try { Uri.parse(storage) } catch (_: Exception) { return PhotoQueueCore.Destination.LOST }
             // A revoked grant leaves the folder in place but no longer ours to write.
-            val granted = context.contentResolver.persistedUriPermissions.any { it.uri == tree && it.isWritePermission }
-            granted && treeAnswers(DocumentsContract.buildDocumentUriUsingTree(tree, DocumentsContract.getTreeDocumentId(tree)))
-        } catch (_: Exception) { false }
+            if (context.contentResolver.persistedUriPermissions.none { it.uri == tree && it.isWritePermission })
+                return PhotoQueueCore.Destination.LOST
+            return try {
+                val root = DocumentsContract.buildDocumentUriUsingTree(tree, DocumentsContract.getTreeDocumentId(tree))
+                val found = bounded { signal -> context.contentResolver.query(root,
+                    arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID), null, signal) }?.use { it.moveToFirst() } ?: false
+                if (found) PhotoQueueCore.Destination.AVAILABLE else PhotoQueueCore.Destination.LOST
+            } catch (_: java.io.FileNotFoundException) { PhotoQueueCore.Destination.LOST }
+            catch (_: IllegalArgumentException) { PhotoQueueCore.Destination.LOST }
+            catch (_: Exception) { PhotoQueueCore.Destination.UNKNOWN }
+        }
 
-        /** As the camera does when a photo cannot be created in the folder (GrapheneOS behaviour). */
+        /** As the camera does when a photo cannot be created in the folder (GrapheneOS behaviour).
+         *  A locked device only records it: the next unlocked camera session applies it. */
         override fun forgetDestination(storage: String) {
-            val prefs = context.getSharedPreferences(CamConfig.COMMON_SHARED_PREFS_NAME, Context.MODE_PRIVATE)
-            synchronized(lock) {
-                if (prefs.getString(CamConfig.SettingValues.Key.STORAGE_LOCATION, defaultStorage) != storage) return
-                app.grapheneos.camera.CapturedItems.savePreviousSafTree(Uri.parse(storage), prefs)
-                prefs.edit().putString(CamConfig.SettingValues.Key.STORAGE_LOCATION, defaultStorage).apply()
-                app.grapheneos.camera.CapturedItems.releaseUntrackedSafTrees(context, prefs)
+            if (context.getSystemService(android.app.KeyguardManager::class.java).isDeviceLocked) {
+                context.getSharedPreferences(QUEUE_PREFS, Context.MODE_PRIVATE).edit { putString(PENDING_STORAGE_RESET, storage) }
+                return
             }
+            resetStorageLocation(storage)
         }
 
         @Suppress("DEPRECATION")

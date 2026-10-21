@@ -635,6 +635,7 @@ open class MainActivity : AppCompatActivity(),
         }
 
         app.grapheneos.camera.capturer.PhotoProcessingQueue.resume()
+        if (this !is SecureActivity) app.grapheneos.camera.capturer.PhotoProcessingQueue.applyPendingStorageReset()
         refreshProcessingThumbnail()
         updateThumbnail()
 

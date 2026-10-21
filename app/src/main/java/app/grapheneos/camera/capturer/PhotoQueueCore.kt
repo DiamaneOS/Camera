@@ -57,8 +57,9 @@ internal class PhotoQueueCore<D : PhotoQueueCore.Data>(
         fun deletePublication(uri: String): Boolean
         /** A row created just before a crash that holds exactly this photo; other pending rows are deleted. */
         fun adoptableOrphan(dateString: String, identity: PublicationRecovery.Identity): String?
-        /** Whether the folder can take new photos: present, answering and still granted. */
-        fun destinationAvailable(storage: String): Boolean
+        /** Whether the folder can take new photos. LOST only for a missing write grant or a tree
+         *  that answers that it is gone. A provider that does not answer in time is UNKNOWN. */
+        fun destinationState(storage: String): Destination
         /** The camera stops saving to a lost folder: its setting returns to the default location. */
         fun forgetDestination(storage: String)
 
@@ -98,6 +99,7 @@ internal class PhotoQueueCore<D : PhotoQueueCore.Data>(
     }
 
     enum class RetryResult { STARTED, REFUSED, QUEUE_FULL }
+    enum class Destination { AVAILABLE, LOST, UNKNOWN }
 
     private class Job<D : Data>(val id: String, val data: D) {
         var state = QUEUED
@@ -327,10 +329,16 @@ internal class PhotoQueueCore<D : PhotoQueueCore.Data>(
         }
     }
 
-    /** Marks a missing or revoked folder durably, so no automatic attempt runs again. */
+    /** Marks a missing or revoked folder durably, so no automatic attempt runs again. A folder
+     *  whose provider does not answer fails this attempt only, like a deferred publication. */
     private fun checkDestination(job: Job<D>) {
         val storage = job.storage()
-        if (storage == io.defaultStorage || io.destinationAvailable(storage)) return
+        if (storage == io.defaultStorage) return
+        when (io.destinationState(storage)) {
+            Destination.AVAILABLE -> return
+            Destination.UNKNOWN -> error("Photo destination did not answer")
+            Destination.LOST -> Unit
+        }
         synchronized(lock) { job.destinationLost = true; persistQuietly(job) }
         try { io.forgetDestination(storage) } catch (error: Exception) { io.log("Cannot reset the storage location", error) }
         error("Photo destination is unavailable")
