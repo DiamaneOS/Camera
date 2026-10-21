@@ -1851,11 +1851,24 @@ open class MainActivity : AppCompatActivity(),
                 } else if (item.type == ITEM_TYPE_IMAGE) {
                     val source = ImageDecoder.createSource(ctx.contentResolver, item.uri)
                     bitmap = ImageDecoder.decodeBitmap(source, ImageResizer(side, side))
+                    bitmap = if (item.isRaw) app.grapheneos.camera.util.DngPreview.thumbnail(ctx, item.uri, side, side)
                 }
             } catch (e: Exception) {
                 Log.d(TAG, "unable to update preview", e)
             }
 
+            // A photo that is still there but cannot be decoded keeps its place with an empty
+            // thumbnail. Only a photo that is gone hands over to the previous one.
+            if (bitmap == null) {
+                val exists = item.processingId != null || try {
+                    contentResolver.query(item.uri, arrayOf(android.provider.BaseColumns._ID), null, null, null)?.use { it.count > 0 } ?: false
+                } catch (_: Exception) { false }
+                if (exists) mainExecutor.execute {
+                    if (generation==thumbnailGeneration && isStarted && camConfig.lastCapturedItem?.uri == item.uri) {
+                        preview.setImageDrawable(null); isThumbnailLoaded = true
+                    }
+                } else recoverThumbnail(generation,item)
+            }
             if (bitmap != null) {
                 mainExecutor.execute {
                     if (isStarted && camConfig.lastCapturedItem == item) {

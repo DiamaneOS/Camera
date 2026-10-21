@@ -1,8 +1,14 @@
 <data-extraction-rules>
     <cloud-backup>
         <exclude domain="sharedpref"/>
+        <exclude domain="file" path="photo-processing/"/>
+        <exclude domain="file" path="processing-test/"/>
+        <exclude domain="file" path="portrait-originals/"/>
     </cloud-backup>
     <device-transfer>
         <exclude domain="sharedpref"/>
+        <exclude domain="file" path="photo-processing/"/>
+        <exclude domain="file" path="processing-test/"/>
+        <exclude domain="file" path="portrait-originals/"/>
     </device-transfer>
 </data-extraction-rules>

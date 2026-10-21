@@ -9,6 +9,9 @@ import android.view.ViewGroup
 import android.widget.ImageView
 import androidx.recyclerview.widget.RecyclerView
 import app.grapheneos.camera.capturer.getVideoThumbnail
+import app.grapheneos.camera.capturer.PhotoProcessingQueue
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import app.grapheneos.camera.databinding.GallerySlideBinding
 import app.grapheneos.camera.ui.ZoomableImageView
 import app.grapheneos.camera.ui.activities.InAppGallery
@@ -59,19 +62,41 @@ class GallerySliderAdapter(
         playButton.visibility = View.GONE
 
         holder.currentPostion = position
+        val bindToken = Any()
+        holder.bindToken = bindToken
+        holder.binding.processingStatus.visibility = if (item.processingId != null) View.VISIBLE else View.GONE
+        val canRetry = item.pendingFailed && PhotoProcessingQueue.canRetry(item)
+        holder.binding.processingText.setText(if (!item.pendingFailed) R.string.photo_processing
+            else if (canRetry) R.string.photo_processing_failed else R.string.photo_processing_unrecoverable)
+        holder.binding.retryProcessing.visibility = if (canRetry) View.VISIBLE else View.GONE
+        holder.binding.retryProcessing.setOnClickListener { item.processingId?.let(PhotoProcessingQueue::retry) }
+        ViewCompat.setOnApplyWindowInsetsListener(holder.binding.processingStatus) { view, insets ->
+            val bottom = insets.getInsetsIgnoringVisibility(WindowInsetsCompat.Type.systemBars()).bottom
+            val gap = (16 * view.resources.displayMetrics.density).toInt()
+            (view.layoutParams as ViewGroup.MarginLayoutParams).let { params ->
+                params.bottomMargin = bottom + gap
+                view.layoutParams = params
+            }
+            insets
+        }
+        ViewCompat.requestApplyInsets(holder.binding.processingStatus)
 
         gActivity.asyncImageLoader.executeIfAlive {
             val bitmap: Bitmap? = try {
-                if (item.type == ITEM_TYPE_VIDEO) {
+                if (item.processingId != null) {
+                    PhotoProcessingQueue.previewFile(item)?.let { ImageDecoder.decodeBitmap(ImageDecoder.createSource(it), ImageDownscaler) }
+                } else if (item.type == ITEM_TYPE_VIDEO) {
                     getVideoThumbnail(gActivity, item.uri)
                 } else {
                     val source = ImageDecoder.createSource(gActivity.contentResolver, item.uri)
-                    ImageDecoder.decodeBitmap(source, ImageDownscaler)
+                    if (item.isRaw) gActivity.resources.displayMetrics.let {
+                        app.grapheneos.camera.util.DngPreview.thumbnail(gActivity, item.uri, it.widthPixels, it.heightPixels) }
+                    else ImageDecoder.decodeBitmap(source, ImageDownscaler)
                 }
             } catch (e: Exception) { null }
 
             gActivity.mainExecutor.execute {
-                if (holder.currentPostion == position) {
+                if (!gActivity.isDestroyed && holder.bindToken === bindToken) {
                     if (bitmap != null) {
                         placeholderText.visibility = View.GONE
                         mediaPreview.visibility = View.VISIBLE
@@ -96,7 +121,7 @@ class GallerySliderAdapter(
                                     gActivity.startActivity(intent)
                                 }
                             }
-                        } else if (item.type == ITEM_TYPE_IMAGE) {
+                        } else if (item.type == ITEM_TYPE_IMAGE && item.processingId == null) {
                             mediaPreview.enableZooming()
                         }
                     } else  {
@@ -121,6 +146,7 @@ class GallerySliderAdapter(
     }
 
     private fun removeChildAt(index: Int) {
+        if (index < 0) return
         items.removeAt(index)
 
         // Close gallery if no files are present
@@ -134,8 +160,23 @@ class GallerySliderAdapter(
         notifyItemRemoved(index)
     }
 
+    fun replaceItems(replacement: List<CapturedItem>) {
+        val same = items.size == replacement.size && items.indices.all { index ->
+            val a = items[index]; val b = replacement[index]
+            a == b && a.uri == b.uri && a.pendingFailed == b.pendingFailed
+        }
+        if (same) return
+        items.clear(); items.addAll(replacement)
+        notifyDataSetChanged()
+    }
+
+    override fun onViewRecycled(holder: GallerySlide) {
+        holder.bindToken = null
+        super.onViewRecycled(holder)
+    }
+
     fun getCurrentItem(): CapturedItem? {
-        return items.getOrNull(gActivity.gallerySlider.currentItem)
+        return items.getOrNull(gActivity.gallerySlider.currentItem)?.let(PhotoProcessingQueue::resolve)
     }
 
     override fun getItemCount(): Int {

@@ -68,9 +68,9 @@ class ImageSaver(
     val removeExifAfterCapture: Boolean,
     @Px val targetThumbnailWidth: Int,
     @Px val targetThumbnailHeight: Int,
+    val captureTime: Date = Date(),
 ) : ImageCapture.OnImageCapturedCallback()
 {
-    val captureTime = Date()
     val contentResolver = appContext.contentResolver
     val mainThreadExecutor = appContext.mainExecutor
 
@@ -90,6 +90,20 @@ class ImageSaver(
             return
         }
 
+        imageWriterExecutor.execute(this::saveImage)
+    }
+
+    private var savedItem: CapturedItem? = null
+
+    private var onFinished: (() -> Unit)? = null
+
+    fun saveEncodedJpeg(bytes: ByteArray, rotationDegrees: Int, finished: (() -> Unit)? = null) {
+        require(bytes.isNotEmpty() && bytes.size <= 20 * 1024 * 1024)
+        onFinished = finished
+        origJpegBytes = bytes
+        orientation = rotationDegrees
+        shouldUseExifOrientation = false
+        mainThreadExecutor.execute(imageCapturer::onCaptureSuccess)
         imageWriterExecutor.execute(this::saveImage)
     }
 
@@ -129,7 +143,7 @@ class ImageSaver(
         } catch (e: ImageSaverException) {
             handleError(e)
             return
-        }
+        } finally { onFinished?.invoke() }
 
         imageCapturer.mActivity.thumbnailLoaderExecutor.executeIfAlive(this::generateThumbnail)
     }
@@ -206,6 +220,7 @@ class ImageSaver(
         logDuration(startOfWriting) {"image writing (saveToMediaStore: ${saveToMediaStore()})"}
 
         val capturedItem = CapturedItem(ITEM_TYPE_IMAGE, dateString(), uri)
+        savedItem=capturedItem
         mainThreadExecutor.execute { imageCapturer.onImageSaverSuccess(capturedItem) }
     }
 
@@ -281,7 +296,7 @@ class ImageSaver(
             // reading from a ByteBuffer should never cause an IOException
             throw IllegalStateException("unable to generate a thumbnail", e)
         }
-        mainThreadExecutor.execute { imageCapturer.onThumbnailGenerated(bitmap) }
+        mainThreadExecutor.execute { savedItem?.let {imageCapturer.onThumbnailGenerated(bitmap,it)} ?: bitmap.recycle() }
     }
 
     fun saveToMediaStore() = storageLocation == CamConfig.SettingValues.Default.STORAGE_LOCATION

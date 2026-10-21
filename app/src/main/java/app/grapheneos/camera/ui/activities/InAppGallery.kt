@@ -4,6 +4,7 @@ import android.animation.ArgbEvaluator
 import android.animation.ValueAnimator
 import android.annotation.SuppressLint
 import android.content.Context
+import android.content.Intent
 import android.database.Cursor
 import android.graphics.BitmapFactory
 import android.graphics.Color
@@ -44,7 +45,9 @@ import app.grapheneos.camera.GSlideTransformer
 import app.grapheneos.camera.GallerySliderAdapter
 import app.grapheneos.camera.ITEM_TYPE_VIDEO
 import app.grapheneos.camera.R
+import app.grapheneos.camera.capturer.PhotoProcessingQueue
 import app.grapheneos.camera.databinding.GalleryBinding
+import app.grapheneos.camera.util.executeIfAlive
 import app.grapheneos.camera.editCapturedItem
 import app.grapheneos.camera.shareCapturedItem
 import app.grapheneos.camera.util.formatVideoDuration
@@ -81,6 +84,14 @@ class InAppGallery : AppCompatActivity() {
     private val autoFinisher = AutoFinishOnSleep(this)
 
     private var lastViewedMediaItem: CapturedItem? = null
+    private var editedItem: CapturedItem? = null
+    private val portraitEditor = registerForActivityResult(androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()) { result ->
+        val photo=result.data?.let { androidx.core.content.IntentCompat.getParcelableExtra(it,"photo",CapturedItem::class.java) }
+        if (result.resultCode==RESULT_OK && photo!=null) { editedItem=photo;refreshItems();showMessage(getString(R.string.portrait_copy_saved)) }
+    }
+    private var showVideosOnly = false
+    private var secureItems: Set<CapturedItem>? = null
+    private var scanGeneration = 0
 
     private lateinit var windowInsetsController: WindowInsetsControllerCompat
 
@@ -160,11 +171,29 @@ class InAppGallery : AppCompatActivity() {
         return super.onCreateOptionsMenu(menu)
     }
 
+    // PortraitStore.contains reads files and queries a provider: never on the main thread per page.
+    private val portraitEditable = java.util.concurrent.ConcurrentHashMap<android.net.Uri, Boolean>()
+    private val portraitChecks by lazy { java.util.concurrent.Executors.newSingleThreadExecutor() }
+    private fun portraitEditable(uri: android.net.Uri): Boolean {
+        portraitEditable[uri]?.let { return it }
+        portraitEditable[uri] = false
+        portraitChecks.execute {
+            val editable = app.grapheneos.camera.capturer.PortraitStore.contains(this, uri)
+            portraitEditable[uri] = editable
+            if (editable) runOnUiThread { if (!isDestroyed) invalidateOptionsMenu() }
+        }
+        return false
+    }
+
     override fun onPrepareOptionsMenu(menu: Menu): Boolean {
         // Every item is a media action; none of them apply until the scan has delivered items
-        val hasMedia = gallerySliderAdapter != null
+        val current = getCurrentItem()
+        val editTitle=if(current!=null && !isSecureMode &&
+            portraitEditable(current.uri)) R.string.edit_portrait else R.string.edit
+        menu.findItem(R.id.edit_icon)?.apply {setTitle(editTitle);contentDescription=getString(editTitle)}
         for (i in 0 until menu.size) {
-            menu[i].isVisible = hasMedia
+            menu[i].isVisible = current != null &&
+                (current.processingId == null || menu[i].itemId == R.id.delete_icon)
         }
         return super.onPrepareOptionsMenu(menu)
     }
@@ -208,6 +237,10 @@ class InAppGallery : AppCompatActivity() {
         }
 
         val curItem = getCurrentItem() ?: return
+        if (withDefault && app.grapheneos.camera.capturer.PortraitStore.contains(this,curItem.uri)) {
+            portraitEditor.launch(Intent(this,PortraitEditorActivity::class.java).setData(curItem.uri))
+            return
+        }
 
         editCapturedItem(this, curItem, useDefaultEditor = withDefault)?.let {
             showMessage(getString(it))
@@ -223,12 +256,14 @@ class InAppGallery : AppCompatActivity() {
             .setPositiveButton(R.string.delete) { _, _ ->
                 var res = false
 
-                val uri = curItem.uri
+                val processingId = curItem.processingId
                 var uri = curItem.uri
                 try {
                     val completed = processingId?.let(PhotoProcessingQueue::cancel)
                     uri = completed?.uri ?: curItem.uri
-                    if (uri.authority == MediaStore.AUTHORITY) {
+                    if (processingId != null && completed == null) {
+                        res = true
+                    } else if (uri.authority == MediaStore.AUTHORITY) {
                         res = contentResolver.delete(uri, null, null) > 0
                     } else {
                         res = DocumentsContract.deleteDocument(contentResolver, uri)
@@ -238,8 +273,12 @@ class InAppGallery : AppCompatActivity() {
                 }
 
                 if (res) {
+                    ++scanGeneration // An older scan must not reinsert the item just deleted.
                     showMessage(getString(R.string.deleted_successfully))
+                    processingId?.let(PhotoProcessingQueue::forgetCompleted)
+                    PhotoProcessingQueue.forgetPhoto(uri)
                     gallerySliderAdapter?.removeItem(curItem)
+                    invalidateOptionsMenu()
                 } else {
                     showMessage(getString(R.string.deleting_unexpected_error))
                 }
@@ -330,6 +369,7 @@ class InAppGallery : AppCompatActivity() {
 
     private fun showCurrentMediaDetails() {
         val curItem = getCurrentItem() ?: return
+        if (curItem.processingId != null) return
 
         var relativePath: String? = null
         var fileName: String? = null
@@ -657,49 +697,22 @@ class InAppGallery : AppCompatActivity() {
 
         val intent = this.intent
 
-        val showVideosOnly = intent.getBooleanExtra(INTENT_KEY_VIDEO_ONLY_MODE, false)
-        val listOfSecureModeCapturedItems = getParcelableArrayListExtra<CapturedItem>(
+        showVideosOnly = intent.getBooleanExtra(INTENT_KEY_VIDEO_ONLY_MODE, false)
+        secureItems = getParcelableArrayListExtra<CapturedItem>(
             intent, INTENT_KEY_LIST_OF_SECURE_MODE_CAPTURED_ITEMS
-        )
-
-        asyncLoaderOfCapturedItems.execute {
-            val unprocessedItems: List<CapturedItem> = try {
-                CapturedItems.get(this)
-            } catch (_: InterruptedException) {
-                // activity was destroyed and exectutor.shutdownNow() was called, which interrupts
-                // executor threads
-                return@execute
-            }
-            val setOfSecureModeCapturedItems = listOfSecureModeCapturedItems?.toHashSet()
-            val items = ArrayList<CapturedItem>(unprocessedItems.size)
-
-            unprocessedItems.forEach { item ->
-                if (showVideosOnly) {
-                    if (item.type != ITEM_TYPE_VIDEO) {
-                        return@forEach
-                    }
-                }
-
-                setOfSecureModeCapturedItems?.let {
-                    if (!it.contains(item)) {
-                        return@forEach
-                    }
-                }
-
-                items.add(item)
-            }
-            items.sortByDescending { it.dateString }
-
-            mainExecutor.execute { asyncResultReady(items) }
-        }
+        )?.toSet()
+        gallerySlider.registerOnPageChangeCallback(object : ViewPager2.OnPageChangeCallback() {
+            override fun onPageSelected(position: Int) { invalidateOptionsMenu() }
+        })
+        PhotoProcessingQueue.changes.observe(this) { refreshItems() }
 
         if (lastViewedMediaItem == null) {
             val lastCapturedItem =
                 getParcelableExtra<CapturedItem>(intent, INTENT_KEY_LAST_CAPTURED_ITEM)
 
-            if (lastCapturedItem != null) {
+            if (lastCapturedItem != null && allowed(lastCapturedItem)) {
                 val list = ArrayList<CapturedItem>()
-                list.add(lastCapturedItem)
+                PhotoProcessingQueue.resolve(lastCapturedItem)?.let(list::add)
                 GallerySliderAdapter(this, list).let {
                     gallerySliderAdapter = it
                     gallerySlider.adapter = it
@@ -731,7 +744,23 @@ class InAppGallery : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        PhotoProcessingQueue.resume()
+        refreshItems()
         showUI()
+    }
+
+    private fun allowed(item: CapturedItem): Boolean =
+        (!showVideosOnly || item.type == ITEM_TYPE_VIDEO) &&
+            (!isSecureMode || secureItems?.contains(item) == true)
+
+    private fun refreshItems() {
+        val generation = ++scanGeneration
+        asyncLoaderOfCapturedItems.executeIfAlive {
+            val items = try {
+                ArrayList(CapturedItems.get(this).filter(::allowed).sortedByDescending { it.dateString })
+            } catch (_: InterruptedException) { return@executeIfAlive }
+            mainExecutor.execute { if (generation == scanGeneration) asyncResultReady(items) }
+        }
     }
 
     fun asyncResultReady(items: ArrayList<CapturedItem>) {
@@ -745,47 +774,22 @@ class InAppGallery : AppCompatActivity() {
             return
         }
 
-        var capturedItemPosition = 0
-
-        if (lastViewedMediaItem != null) {
-            for (i in 0..<items.size) {
-                val capturedItem = items[i]
-                if (capturedItem == lastViewedMediaItem) {
-                    capturedItemPosition = i
-                }
-            }
-        }
-
+        val current = editedItem ?: gallerySliderAdapter?.items?.getOrNull(gallerySlider.currentItem) ?: lastViewedMediaItem
+        if (items.any { it.uri==editedItem?.uri }) editedItem=null
+        val capturedItemPosition = items.indexOf(current).coerceAtLeast(0)
         binding.placeholderText.root.visibility = View.GONE
-
         val existingAdapter = gallerySliderAdapter
-
         if (existingAdapter == null) {
             GallerySliderAdapter(this, items).let {
                 gallerySliderAdapter = it
                 gallerySlider.adapter = it
             }
-            invalidateOptionsMenu()
         } else {
-            val adapterItems = existingAdapter.items
-            adapterItems.ensureCapacity(items.size)
-
-            // At times the first item could get deleted before the others get
-            // loaded especially on relatively slower devices, allowing null without throwing
-            // an exception enables handling of such scenarios
-            val preloadedItem = adapterItems.getOrNull(0)
-
-            items.forEachIndexed { index, item ->
-                // this check is needed to avoid showing preloaded item twice (it's not guaranteed
-                // that it'll be first in the list)
-                if (index > 50 || item != preloadedItem) {
-                    adapterItems.add(item)
-                }
-            }
-            existingAdapter.notifyItemRangeInserted(1, items.size - 1)
+            existingAdapter.replaceItems(items)
         }
         gallerySlider.setCurrentItem(capturedItemPosition, false)
-        showUI()
+        lastViewedMediaItem = null
+        invalidateOptionsMenu()
     }
 
     fun toggleUIState() {
