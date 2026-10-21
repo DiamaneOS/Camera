@@ -34,7 +34,8 @@ class ImageCapturer(val mActivity: MainActivity) {
     val isTakingPicture: Boolean
         get() = currentImageSaver != null || rawFileCapture != null || processedCapture != null
 
-    val isProcessingCapture: Boolean get() = processedCapture != null
+    /** Captures the UI must not interrupt: processed photos and split JPEG + RAW pairs. */
+    val isProcessingCapture: Boolean get() = processedCapture != null || rawFileCapture?.split == true
 
     var captureZoom: Float? = null
         private set
@@ -151,7 +152,7 @@ class ImageCapturer(val mActivity: MainActivity) {
         }
 
         if (camConfig.activePhotoOutputFormat != PhotoOutputFormat.JPEG) {
-            val capture = RawFileCapture(this, camConfig.activePhotoOutputFormat, imageMetadata)
+            val capture = RawFileCapture(this, camConfig.activePhotoOutputFormat, imageMetadata, camConfig.splitsRawJpeg)
             rawFileCapture = capture
             fadeCaptureButton()
             capture.start(imageCapture)

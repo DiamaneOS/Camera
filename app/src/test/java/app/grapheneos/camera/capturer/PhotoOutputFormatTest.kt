@@ -27,4 +27,22 @@ class PhotoOutputFormatTest {
         assertEquals(PhotoOutputFormat.JPEG,
             PhotoOutputFormat.effective(requested, PhotoOutputFormat.entries, true))
     }
+
+    @Test fun pairedCaptureSplitsOnlyOnTheOptedInUltraWide() {
+        val all = PhotoOutputFormat.entries
+        assertEquals(true, PhotoOutputFormat.splitsRawJpeg(PhotoOutputFormat.JPEG_RAW, all, true, true))
+        assertEquals(false, PhotoOutputFormat.splitsRawJpeg(PhotoOutputFormat.JPEG_RAW, all, false, true))
+        assertEquals(false, PhotoOutputFormat.splitsRawJpeg(PhotoOutputFormat.JPEG_RAW, all, true, false))
+        assertEquals(false, PhotoOutputFormat.splitsRawJpeg(PhotoOutputFormat.JPEG, all, true, true))
+        assertEquals(false, PhotoOutputFormat.splitsRawJpeg(PhotoOutputFormat.RAW, all, true, true))
+        assertEquals(false, PhotoOutputFormat.splitsRawJpeg(PhotoOutputFormat.JPEG_RAW,
+            listOf(PhotoOutputFormat.JPEG, PhotoOutputFormat.JPEG_RAW), true, true))
+    }
+
+    @Test fun splitCaptureBindsJpegFirstThenRawAlone() {
+        assertEquals(ImageCapture.OUTPUT_FORMAT_JPEG, PhotoOutputFormat.bindingFormat(PhotoOutputFormat.JPEG_RAW, true, false))
+        assertEquals(ImageCapture.OUTPUT_FORMAT_RAW, PhotoOutputFormat.bindingFormat(PhotoOutputFormat.JPEG_RAW, true, true))
+        assertEquals(ImageCapture.OUTPUT_FORMAT_RAW_JPEG, PhotoOutputFormat.bindingFormat(PhotoOutputFormat.JPEG_RAW, false, false))
+        assertEquals(ImageCapture.OUTPUT_FORMAT_RAW, PhotoOutputFormat.bindingFormat(PhotoOutputFormat.RAW, false, false))
+    }
 }

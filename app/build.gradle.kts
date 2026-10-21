@@ -240,6 +240,9 @@ android {
             providers.gradleProperty("cameraEdgeAwareDemosaic").orNull?.let {enabled ->
                 require(enabled in listOf("true","false"));resValue("bool","config_camera_edge_aware_demosaic",enabled)
             }
+            providers.gradleProperty("cameraUltraWideSplitRawJpeg").orNull?.let {enabled ->
+                require(enabled in listOf("true","false"));resValue("bool","config_camera_ultra_wide_split_raw_jpeg",enabled)
+            }
             providers.gradleProperty("cameraNightIspJpeg").orNull?.let {enabled ->
                 require(enabled in listOf("true","false"));resValue("bool","config_camera_night_isp_jpeg",enabled)
             }

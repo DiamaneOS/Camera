@@ -15,5 +15,20 @@ enum class PhotoOutputFormat(val outputFormat: Int) {
 
         fun effective(requested: PhotoOutputFormat, supported: List<PhotoOutputFormat>, processedMode: Boolean): PhotoOutputFormat =
             if (!processedMode && requested in supported) requested else JPEG
+
+        /**
+         * JPEG + RAW as two requests, JPEG first, where the device says its HAL drops its
+         * processing when both share a request. Needs RAW alone to be supported.
+         */
+        fun splitsRawJpeg(active: PhotoOutputFormat, supported: List<PhotoOutputFormat>,
+                          ultraWide: Boolean, splitUltraWide: Boolean): Boolean =
+            active == JPEG_RAW && ultraWide && splitUltraWide && RAW in supported
+
+        /** The ImageCapture format of each phase of a capture in [active] format. */
+        fun bindingFormat(active: PhotoOutputFormat, split: Boolean, rawPhase: Boolean): Int = when {
+            !split -> active.outputFormat
+            rawPhase -> RAW.outputFormat
+            else -> JPEG.outputFormat
+        }
     }
 }

@@ -627,7 +627,16 @@ class CamConfig(private val mActivity: MainActivity) {
     var activePhotoOutputFormat = PhotoOutputFormat.JPEG
         private set
 
+    /** The physical RAW lens of the current binding, if any. */
+    private var boundRawLensLabel: Int? = null
+
+    /** RAW phase of a split JPEG + RAW capture: ImageCapture is bound for RAW alone. */
+    internal var splitRawPhase = false
+
+    val splitsRawJpeg: Boolean get() = PhotoOutputFormat.splitsRawJpeg(activePhotoOutputFormat,
         supportedPhotoOutputFormats, lensFacing == CameraSelector.LENS_FACING_BACK && boundRawLensLabel == R.string.lens_ultra_wide,
+        mActivity.resources.getBoolean(R.bool.config_camera_ultra_wide_split_raw_jpeg))
+
     var preview: Preview? = null
 
     val allowedFormats: ArrayList<BarcodeFormat> = arrayListOf()
@@ -2078,7 +2087,9 @@ class CamConfig(private val mActivity: MainActivity) {
         physicalMainBound = false
         physicalWideBound = false
         photoLensScale = 1f
+        boundRawLensLabel = null
         if (usesPhysicalModeLens && lensFacing == this.lensFacing) selectedRawLens()?.let {
+            boundRawLensLabel = it.label
             photoLensScale = lensDisplayScale(it)
             return it.selector
         }
@@ -2279,7 +2290,7 @@ class CamConfig(private val mActivity: MainActivity) {
             !mActivity.resources.getBoolean(R.bool.config_camera_direct_raw_burst)
         builder.setOutputFormat(if (cameraXRawBurst) ImageCapture.OUTPUT_FORMAT_RAW
             else if (softwareNight || softwarePhoto) ImageCapture.OUTPUT_FORMAT_JPEG
-            else activePhotoOutputFormat.outputFormat)
+            else PhotoOutputFormat.bindingFormat(activePhotoOutputFormat, splitsRawJpeg, splitRawPhase))
 
         val useCasesList = arrayListOf<UseCase>()
 

@@ -39,6 +39,9 @@
     <!-- Night merges several of the camera's own JPEGs instead of RAW frames. For devices whose
          processed JPEGs are cleaner than our RAW finishing; requires the direct RAW graph. -->
     <bool name="config_camera_night_isp_jpeg">false</bool>
+    <!-- JPEG + RAW on the rear ultra-wide as two requests, JPEG first, for HALs that drop
+         their JPEG processing when RAW shares the request. -->
+    <bool name="config_camera_ultra_wide_split_raw_jpeg">false</bool>
     <!-- Longest frame for merged-JPEG Night. Some HALs switch long manual exposures to a
          separate still path without their noise reduction. Zero keeps the handheld limit. -->
     <integer name="config_camera_night_isp_jpeg_max_exposure_ms">0</integer>
