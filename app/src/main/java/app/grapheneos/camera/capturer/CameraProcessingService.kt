@@ -24,7 +24,8 @@ class CameraProcessingService : Service() {
             work.run()
         }, "photo-processing")
     }
-    private val busy = AtomicBoolean()
+    /** Set when this instance is unbound: a request it accepted but has not started is dropped. */
+    private val stopped = AtomicBoolean()
     @Volatile private var task: RawNativeCore.Task? = null
     @Volatile private var rgbTask: RgbDenoiser? = null
     @Volatile private var depthTask: PortraitDepthEstimator? = null
@@ -32,7 +33,15 @@ class CameraProcessingService : Service() {
         val input = message.data
         input.classLoader = SharedMemory::class.java.classLoader
         val reply = message.replyTo
-        if (!busy.compareAndSet(false, true)) {
+        val admitted = admission.tryEnter() && try {
+            executor.execute { process(input, reply) }
+            true
+        } catch (_: java.util.concurrent.RejectedExecutionException) {
+            // This instance is already destroyed.
+            admission.leave()
+            false
+        }
+        if (!admitted) {
             @Suppress("DEPRECATION")
             val extra = input.getParcelableArrayList<SharedMemory>("frames")
             extra?.forEach(SharedMemory::close)
@@ -43,8 +52,6 @@ class CameraProcessingService : Service() {
             input.getParcelable<SharedMemory>("rawShading")?.close()
             try { reply?.send(Message.obtain(null, 1).apply { data = Bundle().apply { putString("error", "Processor busy"); putBoolean("busy", true) } }) }
             catch (_: RemoteException) { }
-        } else executor.execute {
-            process(input, reply)
         }
         true
     })
@@ -58,11 +65,14 @@ class CameraProcessingService : Service() {
         var portraitMemory: SharedMemory? = null
         var bitmap: Bitmap? = null
         try {
+            check(!stopped.get()) { "Processor stopped" }
             val rawShading = input.getParcelable<SharedMemory>("rawShading")
             rawShading?.let { memories.add(it); require(input.getInt("mode") == 1 && it.size in 24..RawShadingData.MAX_BYTES) }
             val start = SystemClock.elapsedRealtime()
             RawNativeCore.Task().use { native ->
                 task = native
+                // onUnbind sets stopped before it cancels task: one of the two sees the other.
+                if (stopped.get()) native.cancel()
                 when (input.getInt("mode")) {
                     1 -> {
                         val frames = input.getParcelableArrayList<SharedMemory>("frames") ?: error("Missing RAW frames")
@@ -252,20 +262,33 @@ class CameraProcessingService : Service() {
             output.putString("error", error.javaClass.simpleName + ": " + error.message)
         } finally {
             task = null
-            bitmap?.recycle()
-            mappings.forEach(SharedMemory::unmap)
-            memories.forEach(SharedMemory::close)
+            // Release admission before publishing completion. A reply can trigger
+            // the next request before this executor returns; it will queue behind
+            // our remaining output-handle cleanup on the same serial executor.
+            try {
+                bitmap?.recycle()
+                mappings.forEach(SharedMemory::unmap)
+                memories.forEach(SharedMemory::close)
+            } finally { admission.leave() }
         }
-        // Release admission before publishing completion. A reply can trigger
-        // the next request before this executor returns; it will queue behind
-        // our remaining output-handle cleanup on the same serial executor.
-        busy.set(false)
         try { reply?.send(Message.obtain(null, 1).apply { data = output }) }
         catch (_: RemoteException) { }
         finally { encodedMemory?.close(); portraitMemory?.close() }
     }
 
     override fun onBind(intent: Intent): IBinder = messenger.binder
-    override fun onUnbind(intent: Intent): Boolean { task?.cancel(); depthTask?.cancel();rgbTask?.cancel(); return false }
-    override fun onDestroy() { task?.cancel(); depthTask?.cancel();rgbTask?.cancel(); executor.shutdownNow(); super.onDestroy() }
+    override fun onUnbind(intent: Intent): Boolean { stop(); return false }
+    // The running task ends at its next cancellation check and then leaves the admission. Its
+    // thread is not interrupted, and a queued request still runs far enough to leave it.
+    override fun onDestroy() { stop(); executor.shutdown(); super.onDestroy() }
+    private fun stop() { stopped.set(true); task?.cancel(); depthTask?.cancel(); rgbTask?.cancel() }
+
+    companion object {
+        /**
+         * One task per process, across service instances. After a cancel and unbind the old
+         * instance's native task can still run while a new instance is bound for the next photo.
+         * The new one answers busy until it ends, and the client backs off and resends.
+         */
+        internal val admission = ProcessingAdmission()
+    }
 }
