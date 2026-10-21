@@ -627,6 +627,7 @@ class CamConfig(private val mActivity: MainActivity) {
     var activePhotoOutputFormat = PhotoOutputFormat.JPEG
         private set
 
+        supportedPhotoOutputFormats, lensFacing == CameraSelector.LENS_FACING_BACK && boundRawLensLabel == R.string.lens_ultra_wide,
     var preview: Preview? = null
 
     val allowedFormats: ArrayList<BarcodeFormat> = arrayListOf()
@@ -2571,10 +2572,15 @@ class CamConfig(private val mActivity: MainActivity) {
         val retention=mActivity.resources.getInteger(R.integer.config_camera_preview_temporal_retention)
         if(BuildConfig.DEBUG)Log.i("TemporalPreview","setup retention="+retention+" wide="+physicalWideBound+" unavailable="+temporalPreviewUnavailable+" mode="+currentMode.name)
         if(retention in 1..80 && !temporalPreviewUnavailable && appliedExtension==null && slowMotion==null &&
-            !cameraXRawBurst && activePhotoOutputFormat==PhotoOutputFormat.JPEG &&
+            // The filter does not depend on the still format, but CameraX refuses a preview
+            // effect beside a RAW ImageCapture. A split JPEG + RAW keeps it outside its RAW phase.
+            !cameraXRawBurst && (activePhotoOutputFormat==PhotoOutputFormat.JPEG || (splitsRawJpeg && !splitRawPhase)) &&
             lensFacing==CameraSelector.LENS_FACING_BACK &&
             (currentMode==CameraMode.VIDEO || currentMode in setOf(CameraMode.CAMERA,CameraMode.NIGHT) &&
-                (physicalWideBound || photoLensScale<.999f))) {
+                // A logical camera zooms past 1x without a rebind: keep the effect whenever the
+                // wide lens is reachable and let the zoom decide whether it filters.
+                (physicalWideBound || photoLensScale<.999f ||
+                    (if (prefersPhysicalMain) requestedPhotoZoom<.999f else wideDisplayScale()<.999f)))) {
             val generation=previewRecoveryGeneration
             temporalPreview=app.grapheneos.camera.ui.TemporalPreviewEffect(retention/100f,spatialLuma) {temporalPreviewFailed(generation)}
         }

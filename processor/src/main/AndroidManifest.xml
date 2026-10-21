@@ -1,0 +1,8 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <permission android:name="${applicationId}.BIND_PREVIEW" android:protectionLevel="signature" />
+    <application android:label="Camera processing" android:allowBackup="false" android:memtagMode="async">
+        <meta-data android:name="android.permission.INTERNET.mode" android:value="runtime" />
+        <service android:name=".PortraitProcessorService" android:exported="true"
+            android:permission="${applicationId}.BIND_PREVIEW" android:process=":preview" />
+    </application>
+</manifest>
