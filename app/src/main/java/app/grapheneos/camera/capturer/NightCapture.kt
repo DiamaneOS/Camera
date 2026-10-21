@@ -220,7 +220,9 @@ internal class NightCapture(private val owner: ImageCapturer, private val cancel
                     }
                     if (color == null) color = RawCameraMetadata.color(characteristics,
                         if (initial.get(R.COLOR_CORRECTION_GAINS) != null && initial.get(R.COLOR_CORRECTION_TRANSFORM) != null) initial else result)
-                    if (index == 0 && app.grapheneos.camera.BuildConfig.DEBUG && owner.mActivity.intent.getBooleanExtra("testKeepRaw", false)) {
+                    // Development builds: the intent extra, or a one-shot flag file armed over adb.
+                    if (index == 0 && app.grapheneos.camera.BuildConfig.DEBUG && (owner.mActivity.intent.getBooleanExtra("testKeepRaw", false) ||
+                            java.io.File(context.filesDir, "processing-test/keep-night-raw").delete())) {
                         keepTestFrame(width, height, plane.rowStride, plane.buffer.duplicate(), characteristics, initial, result)
                     }
                     motions[index] = synchronized(listener) { motion }
