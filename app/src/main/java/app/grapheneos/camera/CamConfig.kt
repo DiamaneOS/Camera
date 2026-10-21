@@ -513,24 +513,10 @@ class CamConfig(private val mActivity: MainActivity) {
         camera?.cameraControl?.setZoomRatio(local)
     }
 
+    /** The lens buttons this mode and camera support, from the zoom range of the current binding. */
     fun zoomPresets(): List<Float> {
-        if (lensFacing == CameraSelector.LENS_FACING_BACK && currentMode == CameraMode.VIDEO) {
-            val state=zoomState ?: return emptyList()
-            return buildList {
-                if(state.minZoomRatio<1f)add(state.minZoomRatio)
-                if(state.minZoomRatio<=1f && state.maxZoomRatio>=1f)add(1f)
-                if(state.maxZoomRatio>=2f)add(2f)
-            }
-        }
-        if (lensFacing != CameraSelector.LENS_FACING_BACK || isVideoMode || isQRMode ||
-            (currentMode != CameraMode.CAMERA && !softwareNight && !softwarePortrait)) return emptyList()
-        val lenses = rawLenses().filter { !softwareNight || supportsNight(it.info) }
-        if (lenses.none { it.label == R.string.lens_main }) return emptyList()
-        return buildList {
-            if (wideDisplayScale() < 1f && lenses.any { it.label == R.string.lens_ultra_wide }) add(wideDisplayScale())
-            add(1f)
-            if ((zoomState?.maxZoomRatio ?: 1f) >= 2f) add(2f)
-        }
+        val state = zoomState ?: return emptyList()
+        return app.grapheneos.camera.capturer.LensPresets.choose(state.minZoomRatio, state.maxZoomRatio)
     }
 
     fun selectZoomPreset(value: Float) {

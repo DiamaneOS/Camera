@@ -1005,7 +1005,7 @@ open class MainActivity : AppCompatActivity(),
     fun updateLensControls() {
         if (!this::binding.isInitialized || !this::camConfig.isInitialized) return
         val choices = camConfig.zoomPresets()
-        binding.lensControls.visibility = if (choices.size > 1 && !camConfig.isQRMode &&
+        binding.lensControls.visibility = if (choices.size > 1 &&
             (!this::settingsDialog.isInitialized || !settingsDialog.isShowing)) View.VISIBLE else View.GONE
         if(this::settingsIcon.isInitialized && previewView.height>0 && settingsIcon.height>0) {
             val previewPosition=IntArray(2);val settingsPosition=IntArray(2)
