@@ -13,12 +13,11 @@ android {
     defaultConfig {
         applicationId="app.grapheneos.camera.processor";minSdk=33;targetSdk=37
         versionCode=1;versionName="1"
-        ndk.abiFilters+=listOf("arm64-v8a","armeabi-v7a","x86_64")
         externalNativeBuild.ndkBuild {arguments+=listOf("APP_STL=c++_static","APP_OPTIM=release")}
     }
     buildTypes {
-        getByName("debug") {applicationIdSuffix=".dev";isDebuggable=false;isMinifyEnabled=true;proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"),"proguard-rules.pro")}
-        getByName("release") {isMinifyEnabled=true;proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"),"proguard-rules.pro")}
+        getByName("debug") {ndk.abiFilters+=listOf("arm64-v8a","armeabi-v7a","x86_64");applicationIdSuffix=".dev";isDebuggable=false;isMinifyEnabled=true;proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"),"proguard-rules.pro")}
+        getByName("release") {ndk.abiFilters+="arm64-v8a";isMinifyEnabled=true;proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"),"proguard-rules.pro")}
     }
     compileOptions {sourceCompatibility=JavaVersion.VERSION_17;targetCompatibility=JavaVersion.VERSION_17}
     sourceSets.getByName("main") {

@@ -196,7 +196,6 @@ android {
         manifestPlaceholders["portraitProcessorPackage"]="app.grapheneos.camera.processor"
         minSdk = 29
         targetSdk = 37
-        ndk.abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
         // DiamaneOS: upstream version x 100 + DiamaneOS revision (93.2 = 9302). Always higher than
         // upstream's own numbers and only ever rising, as Android refuses a lower version as an update.
         versionCode = 9304
@@ -210,6 +209,8 @@ android {
 
     buildTypes {
         getByName("release") {
+            // Release ships for arm64 only; debug keeps the emulator and 32-bit ABIs.
+            ndk.abiFilters += "arm64-v8a"
             isShrinkResources = true
             isMinifyEnabled = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
@@ -220,6 +221,7 @@ android {
         }
 
         getByName("debug") {
+            ndk.abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
             buildConfigField("boolean", "CAMERA_NEURAL_DENOISE_TEST", (providers.gradleProperty("cameraNeuralDenoiseTest").orNull=="true").toString())
             applicationIdSuffix = ".dev"
             manifestPlaceholders["portraitProcessorPackage"]="app.grapheneos.camera.processor.dev"
