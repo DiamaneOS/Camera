@@ -294,7 +294,7 @@ class ImageSaver(
         return IMAGE_NAME_PREFIX + dateString() + imageFileFormat
     }
 
-    private fun mimeType() = MimeTypeMap.getSingleton().getMimeTypeFromExtension(imageFileFormat) ?: "image/*"
+    private fun mimeType() = MimeTypeMap.getSingleton().getMimeTypeFromExtension(imageFileFormat.removePrefix(".")) ?: "image/*"
 
     @Throws(Exception::class)
     fun obtainOutputUri(): Uri? {
