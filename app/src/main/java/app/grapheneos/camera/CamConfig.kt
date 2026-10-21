@@ -12,8 +12,6 @@ import android.hardware.camera2.CameraCharacteristics
 import android.net.Uri
 import android.os.Build
 import android.provider.MediaStore
-import android.media.MediaCodecList
-import android.media.MediaFormat
 import android.util.Log
 import android.util.Range
 import android.util.Size
@@ -750,14 +748,6 @@ class CamConfig(private val mActivity: MainActivity) {
 
             field = value
         }
-
-    private fun videoQualityPreference(quality: Quality): String = when (quality) {
-        Quality.UHD -> "UHD"
-        Quality.FHD -> "FHD"
-        Quality.HD -> "HD"
-        Quality.SD -> "SD"
-        else -> "HIGHEST"
-    }
 
     var availableVideoFrameRates: List<VideoFrameRate> = emptyList()
         private set
@@ -1787,12 +1777,6 @@ class CamConfig(private val mActivity: MainActivity) {
         }
     }
 
-    private data class VideoSessionProfile(
-        val useCases: List<UseCase>,
-        val features: Set<GroupableFeature>,
-        val frameRates: Set<VideoFrameRate>,
-    )
-
     // A saved frame rate belongs to one camera and resolved recording quality.
     private fun videoFrameRateKey(cameraInfo: CameraInfo): Pair<String, Quality?> {
         val qualities = if (currentMode == CameraMode.SLOW_MOTION) eligibleSlowMotionQualities(cameraInfo)
@@ -1818,40 +1802,6 @@ class CamConfig(private val mActivity: MainActivity) {
         val rates = querySlowMotionFrameRates(cameraInfo,quality)
         return slowMotionRateCache.putIfAbsent(key,rates) ?: rates
     }
-
-    private fun querySlowMotionFrameRates(cameraInfo: CameraInfo, quality: Quality): List<VideoFrameRate> {
-        val capabilities = Recorder.getHighSpeedVideoCapabilities(cameraInfo) ?: return emptyList()
-        if (quality !in capabilities.getSupportedQualities(DynamicRange.SDR)) return emptyList()
-        val probe = HighSpeedVideoSessionConfig(
-            VideoCapture.withOutput(
-                Recorder.Builder().setQualitySelector(QualitySelector.from(quality)).build()
-            ),
-            Preview.Builder().build(),
-        )
-        // The camera can advertise rates the hardware encoder cannot take at this size.
-        val size = QualitySelector.getResolution(cameraInfo, quality)
-        return try {
-            cameraInfo.getSupportedFrameRateRanges(probe)
-                .filter { it.lower == it.upper && it.upper >= VideoFrameRate.SLOW_MOTION_MIN }
-                .filter { size != null && hardwareEncoderSupports(size, it.upper) }
-                .map { VideoFrameRate(it.lower, it.upper) }
-                .distinct().sortedBy { it.upper }
-        } catch (exception: IllegalArgumentException) {
-            Log.w(TAG, "High-speed recording cannot be queried", exception)
-            emptyList()
-        } catch (exception: UnsupportedOperationException) {
-            Log.w(TAG, "High-speed recording cannot be queried", exception)
-            emptyList()
-        }
-    }
-
-    private fun hardwareEncoderSupports(size: Size, fps: Int): Boolean =
-        MediaCodecList(MediaCodecList.REGULAR_CODECS).codecInfos.any { info ->
-            info.isEncoder && info.isHardwareAccelerated &&
-                MediaFormat.MIMETYPE_VIDEO_AVC in info.supportedTypes &&
-                info.getCapabilitiesForType(MediaFormat.MIMETYPE_VIDEO_AVC).videoCapabilities
-                    ?.areSizeAndRateSupported(size.width, size.height, fps.toDouble()) == true
-        }
 
     // The saved rate when it is a slow-motion rate this camera and quality still offer.
     private fun savedSlowMotionRate(): VideoFrameRate? {
