@@ -44,7 +44,8 @@ public final class JpegBurstComparisonTestActivity extends Activity {
         boolean controlled = getIntent().getBooleanExtra("controlled", false);
         int noiseMode = getIntent().getIntExtra("noiseMode", CaptureRequest.NOISE_REDUCTION_MODE_HIGH_QUALITY);
         int width = getIntent().getIntExtra("width", 0), height = getIntent().getIntExtra("height", 0);
-        new Thread(() -> capture(camera, ceilingMs, focusMode, controlled, noiseMode, width, height), "jpeg-burst-comparison").start();
+        int budgetPercent = getIntent().getIntExtra("budgetPercent", 100);
+        new Thread(() -> capture(camera, ceilingMs, focusMode, controlled, noiseMode, width, height, budgetPercent), "jpeg-burst-comparison").start();
     }
 
     private void checkActive() { if (stopped) throw new IllegalStateException("Stopped"); }
@@ -61,7 +62,7 @@ public final class JpegBurstComparisonTestActivity extends Activity {
             digital != null && Math.abs(digital - boost) <= 2;
     }
 
-    private void capture(String camera, int ceilingMs, int focusMode, boolean controlled, int noiseMode, int requestedWidth, int requestedHeight) {
+    private void capture(String camera, int ceilingMs, int focusMode, boolean controlled, int noiseMode, int requestedWidth, int requestedHeight, int budgetPercent) {
         File root = new File(getNoBackupFilesDir(), "jpeg-burst-comparison");
         root.mkdirs();
         JSONObject report = new JSONObject();
@@ -73,7 +74,7 @@ public final class JpegBurstComparisonTestActivity extends Activity {
         ImageReader preview = null, jpeg = null;
         long started = SystemClock.elapsedRealtime();
         try {
-            if (ceilingMs != 67 && ceilingMs != 125 && ceilingMs != 500) throw new IllegalArgumentException("Exposure ceiling");
+            if (ceilingMs != 67 && ceilingMs != 100 && ceilingMs != 125 && ceilingMs != 500) throw new IllegalArgumentException("Exposure ceiling");
             if (focusMode != CaptureRequest.CONTROL_AF_MODE_AUTO && focusMode != CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
                 throw new IllegalArgumentException("Focus mode");
             CameraManager manager = getSystemService(CameraManager.class);
@@ -181,17 +182,24 @@ public final class JpegBurstComparisonTestActivity extends Activity {
             int oldIso = Objects.requireNonNull(metering.get(CaptureResult.SENSOR_SENSITIVITY));
             int oldBoost = Objects.requireNonNull(metering.get(CaptureResult.CONTROL_POST_RAW_SENSITIVITY_BOOST));
             if (oldTime <= 0 || oldIso <= 0 || oldBoost <= 0) throw new IllegalStateException("Metering values");
+            if (budgetPercent < 10 || budgetPercent > 400) throw new IllegalArgumentException("Budget percent");
             double budget = oldTime * (Math.min(oldIso, isoRange.getUpper()) * (oldBoost / 100.0));
             long ceiling = ceilingMs == 67 ? 66_666_667L : ceilingMs * 1_000_000L;
             long exposure = exposureRange.clamp(Math.min(ceiling, (long)(budget / isoRange.getLower())));
             int iso = isoRange.clamp((int)Math.round(budget / exposure));
             int boost = boostRange.clamp((int)Math.round(100 * budget / (exposure * (double)iso)));
+            // Less gain at the same exposure time: analog first with keepBoost, else digital first.
+            boolean keepBoost = getIntent().getBooleanExtra("keepBoost", false);
+            double reduced = budget * budgetPercent / 100.0;
+            if (keepBoost) iso = isoRange.clamp((int)Math.round(100 * reduced / (exposure * (double)boost)));
+            else iso = isoRange.clamp((int)Math.round(reduced / exposure));
+            boost = boostRange.clamp((int)Math.round(100 * reduced / (exposure * (double)iso)));
             if (controlled) {
                 exposure = exposureRange.clamp(ceiling);
                 iso = isoRange.getUpper();
                 boost = boostRange.clamp(200);
             }
-            report.put("requestedExposureNs", exposure).put("requestedIso", iso).put("requestedBoost", boost).put("requestedNoiseMode", noiseMode);
+            report.put("requestedExposureNs", exposure).put("requestedIso", iso).put("requestedBoost", boost).put("requestedNoiseMode", noiseMode).put("budgetPercent", budgetPercent);
             // Complete focus admission at the automatic preview cadence, before
             // independently checking the longer manual frame period.
             repeating.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_START);
