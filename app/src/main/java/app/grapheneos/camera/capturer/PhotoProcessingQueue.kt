@@ -365,6 +365,17 @@ internal object PhotoProcessingQueue {
             granted && treeAnswers(DocumentsContract.buildDocumentUriUsingTree(tree, DocumentsContract.getTreeDocumentId(tree)))
         } catch (_: Exception) { false }
 
+        /** As the camera does when a photo cannot be created in the folder (GrapheneOS behaviour). */
+        override fun forgetDestination(storage: String) {
+            val prefs = context.getSharedPreferences(CamConfig.COMMON_SHARED_PREFS_NAME, Context.MODE_PRIVATE)
+            synchronized(lock) {
+                if (prefs.getString(CamConfig.SettingValues.Key.STORAGE_LOCATION, defaultStorage) != storage) return
+                app.grapheneos.camera.CapturedItems.savePreviousSafTree(Uri.parse(storage), prefs)
+                prefs.edit().putString(CamConfig.SettingValues.Key.STORAGE_LOCATION, defaultStorage).apply()
+                app.grapheneos.camera.CapturedItems.releaseUntrackedSafTrees(context, prefs)
+            }
+        }
+
         @Suppress("DEPRECATION")
         override fun process(id: String, data: Job, stopped: () -> Boolean, prepared: () -> Unit): PublicationRecovery.Identity {
             val directory = directory(id)

@@ -59,6 +59,8 @@ internal class PhotoQueueCore<D : PhotoQueueCore.Data>(
         fun adoptableOrphan(dateString: String, identity: PublicationRecovery.Identity): String?
         /** Whether the folder can take new photos: present, answering and still granted. */
         fun destinationAvailable(storage: String): Boolean
+        /** The camera stops saving to a lost folder: its setting returns to the default location. */
+        fun forgetDestination(storage: String)
 
         /** Runs the processor and writes the result. [prepared] persists Portrait editing data first. */
         fun process(id: String, data: D, stopped: () -> Boolean, prepared: () -> Unit): PublicationRecovery.Identity
@@ -330,6 +332,7 @@ internal class PhotoQueueCore<D : PhotoQueueCore.Data>(
         val storage = job.storage()
         if (storage == io.defaultStorage || io.destinationAvailable(storage)) return
         synchronized(lock) { job.destinationLost = true; persistQuietly(job) }
+        try { io.forgetDestination(storage) } catch (error: Exception) { io.log("Cannot reset the storage location", error) }
         error("Photo destination is unavailable")
     }
 

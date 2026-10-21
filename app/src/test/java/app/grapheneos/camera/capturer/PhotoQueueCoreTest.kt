@@ -89,6 +89,8 @@ class PhotoQueueCoreTest {
             return null
         }
         override fun destinationAvailable(storage: String) = storage in granted
+        val forgotten = arrayListOf<String>()
+        override fun forgetDestination(storage: String) { forgotten += storage }
 
         override fun process(id: String, data: Photo, stopped: () -> Boolean, prepared: () -> Unit): PublicationRecovery.Identity {
             processed++
@@ -237,6 +239,8 @@ class PhotoQueueCoreTest {
         assertEquals(1, io.lostNotifications)
         assertEquals(0, io.failureNotifications)
         assertTrue(io.journals.getValue(id).destinationLost)
+        // Later photos go to the default location, as when the camera cannot create a photo there.
+        assertEquals(listOf(folder), io.forgotten)
         // No automatic attempt: neither a resume nor a relaunch touches it.
         queue.resume()
         val relaunched = queue(io)
@@ -259,6 +263,7 @@ class PhotoQueueCoreTest {
         val id = capture(queue, io, 7, "content://tree/kept")
         val ready = assertNotNullAndGet(published(queue, id))
         assertEquals("content://tree/kept", io.rows.getValue(ready.uri).folder)
+        assertTrue(io.forgotten.isEmpty())
     }
 
     @Test fun failedPhotosDoNotTakeTheQueueSlots() {
