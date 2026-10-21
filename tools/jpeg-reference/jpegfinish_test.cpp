@@ -20,12 +20,13 @@ int main() {
     const int w = 512, h = 384;
     std::mt19937 random(7);
     std::normal_distribution<float> noise(0, .0004f);
-    // A night scene: dark ground and sky, a few lit windows, and the camera's constant
+    // A night scene: dark ground and sky, trees darker still in both halves, a few lit
+    // windows, and the camera's constant
     // blue-heavy linear pedestal on every pixel.
     const float pedestal[3] = {.0006f, 0, .0045f};
     std::vector<uint32_t> night(size_t(w) * h);
     for (int y = 0; y < h; ++y) for (int x = 0; x < w; ++x) {
-        float base = y < h / 3 ? .006f : .0025f, light = (x / 32 + y / 32) % 7 == 0 ? .25f : 0;
+        float base = (x / 48 + 2 * (y / 48)) % 5 == 0 ? .0012f : y < h / 3 ? .006f : .0025f, light = (x / 32 + y / 32) % 7 == 0 ? .25f : 0;
         float r = base * 1.1f + light, g = base + light, b = base * .9f + light * .8f;
         night[size_t(y) * w + x] = rgb10(r + pedestal[0] + noise(random), g + pedestal[1] + noise(random), b + pedestal[2] + noise(random));
     }
@@ -46,6 +47,20 @@ int main() {
     double blueExcess = (sum[2] - sum[1]) / count;
     std::cout << "dark ground blue minus green after: " << blueExcess * 1000 << " x1000 (before " << pedestal[2] * 1000 - .25 << ")\n";
     assert(std::abs(blueExcess) < .0006);
+    // A truly blue dark sky above a neutral dark ground is scene colour, not an offset:
+    // the halves disagree, so nothing is removed and both keep their colours.
+    for (int blue : {20, 10}) {
+        std::vector<uint32_t> sky(size_t(w) * h);
+        for (int y = 0; y < h; ++y) for (int x = 0; x < w; ++x) {
+            float v = decode((y < h / 2 ? 4.f : 12.f) / 255), b = decode((y < h / 2 ? float(blue) : 12.f) / 255);
+            sky[size_t(y) * w + x] = rgb10(v + noise(random) * .1f, v + noise(random) * .1f, b + noise(random) * .1f);
+        }
+        assert(night::finishJpeg(sky.data(), w, h, 1, stop, &black));
+        assert(!black.applied);
+        uint32_t ground = sky[size_t(h - 20) * w + w / 2], upper = sky[size_t(20) * w + w / 2];
+        assert(std::abs(int(ground & 255) - 12) <= 1 && std::abs(int((ground >> 16) & 255) - 12) <= 1);
+        assert(std::abs(int(upper & 255) - blue) <= 1);
+    }
     // A bright scene keeps its colours: no pedestal is measured.
     std::vector<uint32_t> bright(size_t(w) * h);
     for (size_t i = 0; i < bright.size(); ++i) bright[i] = rgb10(.3f, .25f, .35f);

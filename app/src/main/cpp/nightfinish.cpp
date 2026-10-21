@@ -61,11 +61,13 @@ struct Srgb {
 };
 // The camera's black-level error shows as one linear offset per channel, largest in blue,
 // which its gains carry into every pixel. Neutralise it where the scene is darkest, in
-// 16x16 blocks of the finished planes, and only in a night scene with enough dark area.
+// 16x16 blocks of the finished planes, only in a night scene with dark areas in both the
+// upper and the lower half that show the same offset. A dark blue sky above a neutral
+// ground disagrees and keeps its colour. The offset is at most twice the dark luminance.
 BlackPedestal measurePedestal(const Plane& y, const Plane& co, const Plane& cg, int w, int h, const Srgb& srgb) {
     BlackPedestal result;
     constexpr int block = 8;
-    struct Cell { float y, r, g, b; };
+    struct Cell { float y, r, g, b; bool upper; };
     std::vector<Cell> cells;
     std::vector<float> levels;
     for (int by = 0; by + block <= h; by += block) for (int bx = 0; bx + block <= w; bx += block) {
@@ -74,7 +76,7 @@ BlackPedestal measurePedestal(const Plane& y, const Plane& co, const Plane& cg, 
             int i = yy * w + xx; sy += y[size_t(i)]; sa += co[size_t(i)]; sb += cg[size_t(i)];
         }
         float my = float(sy / (block * block)), ma = float(sa / (block * block)), mb = float(sb / (block * block));
-        cells.push_back({my, srgb.toLinear(my + ma - mb), srgb.toLinear(my + mb), srgb.toLinear(my - ma - mb)});
+        cells.push_back({my, srgb.toLinear(my + ma - mb), srgb.toLinear(my + mb), srgb.toLinear(my - ma - mb), by + block <= h / 2});
         levels.push_back(my);
     }
     if (cells.size() < 400) return result;
@@ -84,17 +86,30 @@ BlackPedestal measurePedestal(const Plane& y, const Plane& co, const Plane& cg, 
     auto tenth = levels.begin() + levels.size() / 10;
     std::nth_element(levels.begin(), tenth, levels.end());
     float limit = std::min(*tenth, 24.f);
-    std::array<std::vector<float>, 3> excess;
-    for (const auto& c : cells) if (c.y <= limit) {
-        float luminance = .2126f * c.r + .7152f * c.g + .0722f * c.b;
-        excess[0].push_back(c.r - luminance); excess[1].push_back(c.g - luminance); excess[2].push_back(c.b - luminance);
-    }
-    if (excess[0].size() < cells.size() / 50) return result;
+    // Median excess over luminance per channel (0-2) and the dark luminance (3), per half.
+    auto measure = [&](int half, std::array<float, 4>& out) {
+        std::array<std::vector<float>, 4> values;
+        for (const auto& c : cells) if (c.y <= limit && (half < 0 || c.upper == (half == 0))) {
+            float luminance = .2126f * c.r + .7152f * c.g + .0722f * c.b;
+            values[0].push_back(c.r - luminance); values[1].push_back(c.g - luminance);
+            values[2].push_back(c.b - luminance); values[3].push_back(luminance);
+        }
+        if (values[0].size() < std::max<size_t>(20, cells.size() / 100)) return false;
+        for (int k = 0; k < 4; ++k) {
+            auto at = values[size_t(k)].begin() + values[size_t(k)].size() / 2;
+            std::nth_element(values[size_t(k)].begin(), at, values[size_t(k)].end());
+            out[size_t(k)] = *at;
+        }
+        return true;
+    };
+    std::array<float, 4> all{}, upper{}, lower{};
+    if (!measure(-1, all) || !measure(0, upper) || !measure(1, lower)) return result;
     float offset[3];
     for (int c = 0; c < 3; ++c) {
-        auto at = excess[size_t(c)].begin() + excess[size_t(c)].size() / 2;
-        std::nth_element(excess[size_t(c)].begin(), at, excess[size_t(c)].end());
-        offset[c] = std::clamp(*at, -.006f, .006f);
+        float a = upper[size_t(c)], b = lower[size_t(c)];
+        if (std::abs(a - b) > .2f * std::max(std::abs(a), std::abs(b)) + .0002f) return result;
+        float cap = std::min(.006f, 2 * all[3]);
+        offset[c] = std::clamp(all[size_t(c)], -cap, cap);
     }
     result = {true, offset[0], offset[1], offset[2]};
     return result;
