@@ -224,7 +224,10 @@ class InAppGallery : AppCompatActivity() {
                 var res = false
 
                 val uri = curItem.uri
+                var uri = curItem.uri
                 try {
+                    val completed = processingId?.let(PhotoProcessingQueue::cancel)
+                    uri = completed?.uri ?: curItem.uri
                     if (uri.authority == MediaStore.AUTHORITY) {
                         res = contentResolver.delete(uri, null, null) > 0
                     } else {

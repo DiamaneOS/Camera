@@ -89,6 +89,11 @@ class ImageCapturer(val mActivity: MainActivity) {
 
         val imageCapture = camConfig.imageCapture!!
 
+            if (reservation == null) { mActivity.showMessage(when {
+                PhotoProcessingQueue.isRecovering -> R.string.camera_preparing
+                PhotoProcessingQueue.lacksStorage(bytes) -> R.string.photo_storage_unavailable
+                else -> R.string.photo_queue_full
+            }); return }
         val imageSaver = ImageSaver(
             this,
             mActivity.applicationContext,

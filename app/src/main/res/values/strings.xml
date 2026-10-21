@@ -241,4 +241,6 @@
 
     <string name="wait_for_focus_lock">Prioritize Capture Quality</string>
     <string name="invalid_photo_quality_value">Invalid value set for photo quality</string>
+    <string name="photo_storage_unavailable">Not enough storage to take this photo.</string>
+    <string name="photo_storage_full">Not enough storage to finish the photo. Free up space, then retry it in Gallery.</string>
 </resources>
