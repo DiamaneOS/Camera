@@ -61,6 +61,24 @@ int main() {
         assert(std::abs(int(ground & 255) - 12) <= 1 && std::abs(int((ground >> 16) & 255) - 12) <= 1);
         assert(std::abs(int(upper & 255) - blue) <= 1);
     }
+    // The same sky with a few neutral patches just below its luma in both halves passes the
+    // count gate: only the upper and lower halves disagreeing keeps the ground's blue.
+    {
+        std::uniform_int_distribution<int> dither(-1, 1);
+        auto code = [&](float v) { return decode(std::clamp(v + dither(random), 0.f, 255.f) / 255); };
+        std::vector<uint32_t> scene(size_t(w) * h);
+        for (int y = 0; y < h; ++y) for (int x = 0; x < w; ++x) {
+            int cx = x / 16, cy = y / 16;
+            bool patch = (y >= h / 2 && cy == 18 && cx < 24) || (y < h / 2 && cy == 2 && cx < 5);
+            float r = y < h / 2 ? 6 : 15, g = r, b = y < h / 2 ? 20 : 15;
+            if (patch) r = g = b = 9.1f;
+            scene[size_t(y) * w + x] = rgb10(code(r), code(g), code(b));
+        }
+        assert(night::finishJpeg(scene.data(), w, h, 1, stop, &black));
+        assert(!black.applied);
+        uint32_t ground = scene[size_t(h - 40) * w + w / 2];
+        assert(std::abs(int(ground & 255) - 15) <= 1 && std::abs(int((ground >> 8) & 255) - 15) <= 1);
+    }
     // A bright scene keeps its colours: no pedestal is measured.
     std::vector<uint32_t> bright(size_t(w) * h);
     for (size_t i = 0; i < bright.size(); ++i) bright[i] = rgb10(.3f, .25f, .35f);
