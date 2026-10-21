@@ -3,7 +3,25 @@
     <overlayable name="CameraDeviceConfig">
         <policy type="vendor">
             <item type="integer" name="config_camera_preview_max_short_edge" />
+            <item type="integer" name="config_camera_preview_target_short_edge" />
+            <item type="integer" name="config_camera_default_preview_fps" />
+            <item type="integer" name="config_camera_preview_noise_reduction" />
+            <item type="integer" name="config_camera_preview_temporal_retention" />
+            <item type="integer" name="config_camera_video_preview_luma_denoise" />
+            <item type="integer" name="config_camera_night_handheld_max_exposure_ms" />
+            <item type="integer" name="config_camera_night_steady_max_exposure_ms" />
             <item type="bool" name="config_camera_prefer_capture_quality" />
+            <item type="bool" name="config_camera_prefer_physical_main" />
+            <item type="bool" name="config_camera_direct_raw_burst" />
+            <item type="bool" name="config_camera_ultra_wide_burst" />
+            <item type="bool" name="config_camera_main_raw_burst" />
+            <item type="bool" name="config_camera_ultra_wide_jpeg_denoise" />
+            <item type="bool" name="config_camera_ultra_wide_jpeg_exposure_compensation" />
+            <item type="bool" name="config_camera_photo_steady_exposure" />
+            <item type="bool" name="config_camera_edge_aware_demosaic" />
+            <item type="bool" name="config_camera_night_frequency_denoise" />
+            <item type="bool" name="config_camera_jpeg_high_quality_noise_reduction" />
+            <item type="string" name="config_camera_ultra_wide_raw_correction_grid" />
         </policy>
     </overlayable>
 </resources>

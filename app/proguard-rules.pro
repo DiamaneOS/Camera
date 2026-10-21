@@ -9,3 +9,11 @@
 -keepclassmembers class androidx.camera.core.internal.utils.ImageUtil {
     private static byte[] cropJpegByteArray(byte[], android.graphics.Rect, int);
 }
+
+# The CPU Interpreter is repackaged from the two verified LiteRT AARs. Preserve their
+# published reflection rules because their AAR manifests/dependency graph are not merged.
+-keep class org.tensorflow.lite.annotations.UsedByReflection
+-keep @org.tensorflow.lite.annotations.UsedByReflection class *
+-keepclassmembers class * {
+    @org.tensorflow.lite.annotations.UsedByReflection *;
+}

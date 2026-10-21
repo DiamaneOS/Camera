@@ -12,4 +12,5 @@ dependencyResolutionManagement {
     }
 }
 rootProject.name = "Camera"
-include(":app")
+// Optional at runtime, but its production build must not depend on evaluation flags.
+include(":app", ":processor")

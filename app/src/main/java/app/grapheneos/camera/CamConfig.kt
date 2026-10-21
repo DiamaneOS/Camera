@@ -3,6 +3,11 @@ package app.grapheneos.camera
 import android.annotation.SuppressLint
 import android.content.Context
 import android.content.SharedPreferences
+import android.hardware.camera2.CaptureResult
+import android.os.SystemClock
+import androidx.camera.camera2.interop.Camera2Interop
+import app.grapheneos.camera.capturer.CaptureResultMonitor
+import app.grapheneos.camera.capturer.NightSceneDetector
 import android.hardware.camera2.CameraCharacteristics
 import android.net.Uri
 import android.os.Build
@@ -56,6 +61,9 @@ import androidx.lifecycle.LiveData
 import androidx.lifecycle.Observer
 import app.grapheneos.camera.analyzer.QRAnalyzer
 import app.grapheneos.camera.capturer.PhotoCapturePolicy
+import app.grapheneos.camera.capturer.RawLens
+import app.grapheneos.camera.capturer.RawLensCatalog
+import app.grapheneos.camera.capturer.PhotoOutputFormat
 import app.grapheneos.camera.capturer.VideoFrameRate
 import app.grapheneos.camera.ktx.applyPreviewRatio
 import app.grapheneos.camera.ui.activities.CaptureActivity
@@ -83,6 +91,7 @@ enum class CameraMode(val extensionMode: Int, val uiName: Int) {
     HDR(ExtensionMode.HDR, R.string.hdr_mode),
     CAMERA(ExtensionMode.NONE, R.string.camera),
     VIDEO(ExtensionMode.NONE, R.string.video),
+    SLOW_MOTION(ExtensionMode.NONE, R.string.slow_motion_mode),
 }
 
 @SuppressLint("UnsafeOptInUsageError")
@@ -134,7 +143,6 @@ class CamConfig(private val mActivity: MainActivity) {
             const val SELECT_HIGHEST_RESOLUTION = "select_highest_resolution"
 
             // Legacy name: this setting selected CameraX's capture processing mode.
-            const val WAIT_FOR_FOCUS_LOCK = "wait_for_focus_lock"
             const val PRIORITIZE_CAPTURE_QUALITY = "prioritize_capture_quality"
 
             const val SELF_TIMER_DURATION = "self_timer_duration"
@@ -258,6 +266,122 @@ class CamConfig(private val mActivity: MainActivity) {
         private var probedCameraProvider: ProcessCameraProvider? = null
     }
 
+    private val nightDetector = NightSceneDetector()
+    @Volatile private var lastNightObservation = 0L
+    @Volatile private var nightAvailable = false
+    private var diagnosticNoiseCamera:Camera?=null
+    private var diagnosticNoiseOriginal:androidx.camera.camera2.interop.CaptureRequestOptions?=null
+    private var temporalPreview:app.grapheneos.camera.ui.TemporalPreviewEffect?=null
+    private var temporalPreviewUnavailable=false
+    private var temporalPreviewZoom=1f
+    private val requestedVideoZoom=mutableMapOf<Int,Float>()
+    private var diagnosticTemporalEnabled=true
+    private var diagnosticSpatialLuma:Int?=null
+
+    fun closePreviewProcessing() {temporalPreview?.close();temporalPreview=null}
+    private fun refreshTemporalPreview() {
+        val zoom=zoomState?.zoomRatio ?: requestedPhotoZoom
+        val wide=lensFacing==CameraSelector.LENS_FACING_BACK && (physicalWideBound || zoom<.999f)
+        temporalPreview?.parameters(wide && (!BuildConfig.DEBUG || diagnosticTemporalEnabled),kotlin.math.abs(zoom-temporalPreviewZoom)>.002f)
+        temporalPreviewZoom=zoom
+    }
+    private fun temporalPreviewFailed(generation:Long) {mActivity.runOnUiThread {
+        if(generation!=previewRecoveryGeneration || temporalPreviewUnavailable || !mActivity.isStarted)return@runOnUiThread
+        temporalPreviewUnavailable=true
+        val deadline=SystemClock.elapsedRealtime()+3000
+        fun retry() {
+            if(generation!=previewRecoveryGeneration || !mActivity.isStarted || mActivity.isDestroyed)return
+            if(!mActivity.imageCapturer.isTakingPicture && !mActivity.videoCapturer.isRecording && !directBurstActive)
+                startCamera(forced=true,preserveCapture=true)
+            else if(SystemClock.elapsedRealtime()<deadline)mActivity.previewView.postDelayed({retry()},100)
+        }
+        retry()
+    }}
+
+    @androidx.annotation.OptIn(ExperimentalCamera2Interop::class)
+    private fun applyDiagnosticPreviewNoise(mode:Int) {
+        if(!BuildConfig.DEBUG || mode !in -1..4 || currentMode !in setOf(CameraMode.CAMERA,CameraMode.VIDEO) ||
+            mActivity.imageCapturer.isTakingPicture || mActivity.videoCapturer.isRecording || directBurstActive)return
+        val current=camera ?: return
+        val control=androidx.camera.camera2.interop.Camera2CameraControl.from(current.cameraControl)
+        if(mode==-1) {
+            if(diagnosticNoiseCamera===current)diagnosticNoiseOriginal?.let {control.setCaptureRequestOptions(it)}
+            diagnosticNoiseCamera=null;diagnosticNoiseOriginal=null
+            return
+        }
+        val modes=Camera2CameraInfo.from(current.cameraInfo).getCameraCharacteristic(
+            CameraCharacteristics.NOISE_REDUCTION_AVAILABLE_NOISE_REDUCTION_MODES)
+        if(modes?.contains(mode)!=true)return
+        if(diagnosticNoiseCamera!==current) {
+            diagnosticNoiseCamera=current;diagnosticNoiseOriginal=control.getCaptureRequestOptions()
+        }
+        control.addCaptureRequestOptions(androidx.camera.camera2.interop.CaptureRequestOptions.Builder()
+            .setCaptureRequestOption(android.hardware.camera2.CaptureRequest.NOISE_REDUCTION_MODE,mode).build())
+    }
+    val captureResults = CaptureResultMonitor { result ->
+        val now = SystemClock.elapsedRealtime()
+        if(BuildConfig.DEBUG && result.get(CaptureResult.CONTROL_CAPTURE_INTENT)==android.hardware.camera2.CaptureRequest.CONTROL_CAPTURE_INTENT_STILL_CAPTURE) {
+            app.grapheneos.camera.capturer.PortraitPreviewDiagnostics.stillCapturedAtMs=now
+            app.grapheneos.camera.capturer.PortraitPreviewDiagnostics.stillNoiseReductionMode=result.get(CaptureResult.NOISE_REDUCTION_MODE) ?: -1
+            app.grapheneos.camera.capturer.PortraitPreviewDiagnostics.apply {
+                stillExposureNs=result.get(CaptureResult.SENSOR_EXPOSURE_TIME) ?: 0L
+                stillIso=result.get(CaptureResult.SENSOR_SENSITIVITY) ?: 0
+                stillBoost=result.get(CaptureResult.CONTROL_POST_RAW_SENSITIVITY_BOOST) ?: 0
+                stillAeMode=result.get(CaptureResult.CONTROL_AE_MODE) ?: -1
+            }
+        }
+        if (now - lastNightObservation >= 250) {
+            lastNightObservation = now
+            if(BuildConfig.DEBUG) {
+                app.grapheneos.camera.capturer.PortraitPreviewDiagnostics.temporalPreviewRequest?.let {enabled ->
+                    app.grapheneos.camera.capturer.PortraitPreviewDiagnostics.temporalPreviewRequest=null
+                    mActivity.runOnUiThread {diagnosticTemporalEnabled=enabled;refreshTemporalPreview()}
+                }
+                app.grapheneos.camera.capturer.PortraitPreviewDiagnostics.noiseReductionRequest?.let {mode ->
+                    app.grapheneos.camera.capturer.PortraitPreviewDiagnostics.noiseReductionRequest=null
+                    mActivity.runOnUiThread {applyDiagnosticPreviewNoise(mode)}
+                }
+                app.grapheneos.camera.capturer.PortraitPreviewDiagnostics.spatialLumaRequest?.let {value ->
+                    app.grapheneos.camera.capturer.PortraitPreviewDiagnostics.spatialLumaRequest=null
+                    if(currentMode==CameraMode.VIDEO)mActivity.runOnUiThread {
+                        diagnosticSpatialLuma=value
+                        temporalPreview?.luminance(value/100f)
+                        app.grapheneos.camera.capturer.PortraitPreviewDiagnostics.spatialLumaApplied=value
+                    }
+                }
+                app.grapheneos.camera.capturer.PortraitPreviewDiagnostics.exposureNs=result.get(CaptureResult.SENSOR_EXPOSURE_TIME) ?: 0L
+                app.grapheneos.camera.capturer.PortraitPreviewDiagnostics.frameDurationNs=result.get(CaptureResult.SENSOR_FRAME_DURATION) ?: 0L
+                app.grapheneos.camera.capturer.PortraitPreviewDiagnostics.apply {
+                    capturedAtMs=now
+                    noiseReductionMode=result.get(CaptureResult.NOISE_REDUCTION_MODE) ?: -1
+                    edgeMode=result.get(CaptureResult.EDGE_MODE) ?: -1
+                    iso=result.get(CaptureResult.SENSOR_SENSITIVITY) ?: 0
+                    boost=result.get(CaptureResult.CONTROL_POST_RAW_SENSITIVITY_BOOST) ?: 0
+                    aeMode=result.get(CaptureResult.CONTROL_AE_MODE) ?: -1
+                    val fps=result.get(CaptureResult.CONTROL_AE_TARGET_FPS_RANGE)
+                    fpsLower=fps?.lower ?: 0;fpsUpper=fps?.upper ?: 0
+                }
+            }
+            val suggestion = nightDetector.observe(now,
+                result.get(CaptureResult.SENSOR_EXPOSURE_TIME) ?: 0,
+                result.get(CaptureResult.SENSOR_SENSITIVITY) ?: 0,
+                result.get(CaptureResult.LENS_APERTURE)?.toDouble() ?: 0.0,
+                currentMode == CameraMode.CAMERA && !isVideoMode && nightAvailable,
+                flashMode != ImageCapture.FLASH_MODE_OFF || isTorchOn, true)
+            mActivity.runOnUiThread { mActivity.updateNightSuggestion(suggestion) }
+        }
+    }
+    fun dismissNightSuggestion() {
+        nightDetector.dismiss()
+        mActivity.updateNightSuggestion(false)
+    }
+
+    var portraitSubjectX = .5f
+    var portraitSubjectY = .5f
+    var portraitBlur: Int
+        get() = commonPref.getInt("portrait_blur", 8).coerceIn(1, 20)
+        set(value) { commonPref.edit { putInt("portrait_blur", value.coerceIn(1, 20)) }; mActivity.refreshPortraitPreview() }
+
     var camera: Camera? = null
 
     // Asking CameraInfo for the zoom state is cheap for a plain camera but costs ~100 ms once an
@@ -270,16 +394,237 @@ class CamConfig(private val mActivity: MainActivity) {
     private var zoomStateSource: LiveData<ZoomState>? = null
 
     private val zoomStateObserver = Observer<ZoomState> {
-        zoomState = it
+        zoomState = photoZoomState(it)
+        refreshTemporalPreview()
+        if (mActivity.imageCapturer.isTakingPicture || directBurstActive) return@Observer
         if (it.linearZoom != 0f || it.zoomRatio != 1f) {
             mActivity.zoomBar.updateThumb()
+        } else mActivity.zoomBar.updateThumb(false)
+    }
+
+    val acquisitionZoomRatio: Float get() = when {
+        usesPhysicalModeLens -> nightZoom
+        prefersPhysicalMain -> requestedPhotoZoom/photoLensScale
+        else -> zoomState?.zoomRatio ?: 1f
+    }
+    val displayZoom: Float get() = mActivity.imageCapturer.captureZoom ?: when {
+        usesPhysicalModeLens -> nightZoom * photoLensScale
+        prefersPhysicalMain -> requestedPhotoZoom
+        else -> zoomState?.zoomRatio ?: 1f
+    }
+    private var requestedPhotoZoom = 1f
+    private var physicalMainBound = false
+    private var physicalWideBound = false
+    private var photoLensScale = 1f
+    private var photoMaximum = 1f
+    private var photoWideMinimum = 1f
+    private val rawCatalogCache = HashMap<Int, List<RawLens>>()
+    private val physicalZoomRanges = HashMap<String, app.grapheneos.camera.capturer.PhotoZoomMapping.Range>()
+    private var wideScaleCache: Float? = null
+    private val usesPhysicalModeLens: Boolean get() = usesRawLens || softwarePortrait
+
+    private fun wideDisplayScale(): Float = wideScaleCache ?: (cameraProvider?.availableCameraInfos
+        ?.filter { Camera2CameraInfo.from(it).getCameraCharacteristic(CameraCharacteristics.LENS_FACING) == CameraSelector.LENS_FACING_BACK }
+        ?.minOfOrNull { minZoomRatio(it) } ?: 1f).also { wideScaleCache = it }
+
+    private fun lensDisplayScale(lens: RawLens): Float =
+        if (lensFacing == CameraSelector.LENS_FACING_BACK && lens.label == R.string.lens_ultra_wide) wideDisplayScale() else 1f
+    private val prefersPhysicalMain: Boolean get() = currentMode == CameraMode.CAMERA &&
+        lensFacing == CameraSelector.LENS_FACING_BACK && !isVideoMode && photoOutputFormat == PhotoOutputFormat.JPEG &&
+        mActivity.resources.getBoolean(R.bool.config_camera_prefer_physical_main)
+
+    private fun photoZoomState(state: ZoomState): ZoomState {
+        if (currentMode == CameraMode.SLOW_MOTION || usesPhysicalModeLens) {
+            val mapping = app.grapheneos.camera.capturer.PhotoZoomMapping
+            val native = app.grapheneos.camera.capturer.PhotoZoomMapping.Range(state.minZoomRatio, state.maxZoomRatio)
+            val scale = if (usesPhysicalModeLens) photoLensScale else 1f
+            val range = if (currentMode == CameraMode.SLOW_MOTION) mapping.highSpeedRange(native) else {
+                val companions = switchablePhysicalLenses().map { lens ->
+                    physicalZoomRanges.getOrPut(lens.id) {
+                        val c = Camera2CameraInfo.from(lens.info)
+                        val advertised = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R)
+                            c.getCameraCharacteristic(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE) else null
+                        app.grapheneos.camera.capturer.PhotoZoomMapping.Range(
+                            advertised?.lower ?: 1f,
+                            advertised?.upper ?: c.getCameraCharacteristic(CameraCharacteristics.SCALER_AVAILABLE_MAX_DIGITAL_ZOOM) ?: 1f)
+                    }.let { local -> app.grapheneos.camera.capturer.PhotoZoomMapping.Range(
+                        mapping.toDisplay(local.minimum, lensDisplayScale(lens)),
+                        mapping.toDisplay(local.maximum, lensDisplayScale(lens))) }
+                }
+                mapping.combinedRange(native, scale, companions)
+            }
+            val ratio = (state.zoomRatio * scale).coerceIn(range.minimum, range.maximum)
+            return object : ZoomState {
+                override fun getZoomRatio() = ratio
+                override fun getMinZoomRatio() = range.minimum
+                override fun getMaxZoomRatio() = range.maximum
+                override fun getLinearZoom() = if (range.maximum == range.minimum) 0f else
+                    ((1f / range.minimum - 1f / ratio) / (1f / range.minimum - 1f / range.maximum)).coerceIn(0f, 1f)
+            }
         }
+        if (!prefersPhysicalMain || photoWideMinimum >= 1f) return state
+        if (physicalMainBound) photoMaximum = state.maxZoomRatio
+        val ratio = app.grapheneos.camera.capturer.PhotoZoomMapping.toDisplay(state.zoomRatio, photoLensScale)
+        val maximum = maxOf(photoMaximum, state.maxZoomRatio * photoLensScale)
+        return object : ZoomState {
+            override fun getZoomRatio() = ratio
+            override fun getMinZoomRatio() = photoWideMinimum
+            override fun getMaxZoomRatio() = maximum
+            override fun getLinearZoom(): Float = ((1f / photoWideMinimum - 1f / ratio) /
+                (1f / photoWideMinimum - 1f / maximum)).coerceIn(0f, 1f)
+        }
+    }
+
+    fun setZoomRatio(value: Float, allowLensSwitch: Boolean = true, gesture: Boolean = false) {
+        if (!value.isFinite() || mActivity.imageCapturer.isTakingPicture) return
+        val state = zoomState ?: return
+        var target = value.coerceIn(state.minZoomRatio, state.maxZoomRatio)
+        if (usesPhysicalModeLens) {
+            val lenses = switchablePhysicalLenses()
+            val current = selectedRawLens()
+            if (lenses.isNotEmpty() && current != null) {
+                val useMain = app.grapheneos.camera.capturer.PhotoZoomMapping.useMainLens(
+                    target, current.label == R.string.lens_main, gesture)
+                val selected = lenses.first { it.label == if (useMain) R.string.lens_main else R.string.lens_ultra_wide }
+                if (selected.id != current.id) {
+                    if (!allowLensSwitch) return
+                    rawLensId = selected.id
+                    nightZoom = (target / lensDisplayScale(selected)).coerceAtLeast(1f)
+                    startCamera(true)
+                    return
+                }
+            }
+        }
+        if (prefersPhysicalMain) {
+            if (kotlin.math.abs(target - 1f) < .05f) target = 1f
+            val mainAvailable = rawLenses().any { it.label == R.string.lens_main }
+            if (mainAvailable && (if (gesture) (if (physicalMainBound) target < .92f else target >= 1.04f) else (target >= 1f) != physicalMainBound)) {
+                if (!allowLensSwitch) return
+                requestedPhotoZoom = target
+                startCamera(true)
+                return
+            }
+            requestedPhotoZoom = target
+        }
+        val requestedLocal = if (prefersPhysicalMain || usesPhysicalModeLens) target / photoLensScale else target
+        val local = zoomStateSource?.value?.let { requestedLocal.coerceIn(it.minZoomRatio, it.maxZoomRatio) } ?: requestedLocal
+        if (usesPhysicalModeLens) nightZoom = local
+        if(currentMode==CameraMode.VIDEO)requestedVideoZoom[lensFacing]=target
+        camera?.cameraControl?.setZoomRatio(local)
+    }
+
+    fun zoomPresets(): List<Float> {
+        if (lensFacing == CameraSelector.LENS_FACING_BACK && currentMode == CameraMode.VIDEO) {
+            val state=zoomState ?: return emptyList()
+            return buildList {
+                if(state.minZoomRatio<1f)add(state.minZoomRatio)
+                if(state.minZoomRatio<=1f && state.maxZoomRatio>=1f)add(1f)
+                if(state.maxZoomRatio>=2f)add(2f)
+            }
+        }
+        if (lensFacing != CameraSelector.LENS_FACING_BACK || isVideoMode || isQRMode ||
+            (currentMode != CameraMode.CAMERA && !softwareNight && !softwarePortrait)) return emptyList()
+        val lenses = rawLenses().filter { !softwareNight || supportsNight(it.info) }
+        if (lenses.none { it.label == R.string.lens_main }) return emptyList()
+        return buildList {
+            if (wideDisplayScale() < 1f && lenses.any { it.label == R.string.lens_ultra_wide }) add(wideDisplayScale())
+            add(1f)
+            if ((zoomState?.maxZoomRatio ?: 1f) >= 2f) add(2f)
+        }
+    }
+
+    fun selectZoomPreset(value: Float) {
+        if (mActivity.imageCapturer.isTakingPicture || directBurstActive) return
+        if (usesPhysicalModeLens) {
+            val lens = selectableRawLenses().firstOrNull { it.label == if (value < 1f) R.string.lens_ultra_wide else R.string.lens_main }
+                ?: return
+            if (rawLensId != lens.id) {
+                rawLensId = lens.id
+                nightZoom = (value / lensDisplayScale(lens)).coerceAtLeast(1f)
+                startCamera(true)
+            } else setZoomRatio(value)
+        } else setZoomRatio(value)
     }
 
     var cameraProvider: ProcessCameraProvider? = null
     private var extensionsManager: ExtensionsManager? = null
 
     var imageCapture: ImageCapture? = null
+        private set
+
+    private var nightZoom = 1f
+    var rawLensId: String?
+        get() = commonPref.getString("raw_lens_id_$lensFacing", null)
+        set(value) {
+            commonPref.edit { putString("raw_lens_id_$lensFacing", value) }
+            if (softwareNight) nightZoom = 1f
+        }
+
+    fun rawLenses(): List<RawLens> = rawCatalogCache.getOrPut(lensFacing) {
+        RawLensCatalog.lenses(cameraProvider?.availableCameraInfos ?: emptyList(), lensFacing)
+    }
+
+    fun selectableRawLenses(): List<RawLens> = rawLenses().let { lenses ->
+        if (softwareNight) lenses.filter { supportsNight(it.info) } else lenses
+    }
+
+    private fun selectedRawLens(): RawLens? = selectableRawLenses().let { lenses ->
+        lenses.firstOrNull { it.id == rawLensId } ?: lenses.firstOrNull()
+    }
+
+    private fun switchablePhysicalLenses(): List<RawLens> {
+        if (!usesPhysicalModeLens || lensFacing != CameraSelector.LENS_FACING_BACK) return emptyList()
+        val lenses = selectableRawLenses().filter { it.label == R.string.lens_main || it.label == R.string.lens_ultra_wide }
+        return if (wideDisplayScale() < 1f && lenses.any { it.label == R.string.lens_main } &&
+            lenses.any { it.label == R.string.lens_ultra_wide } && selectedRawLens()?.id in lenses.map { it.id }) lenses else emptyList()
+    }
+
+    private fun vendorModeAvailable(mode: CameraMode, facing: Int = lensFacing): Boolean =
+        isExtensionUsable(if (facing == CameraSelector.LENS_FACING_FRONT) FRONT_CAMERA_SELECTOR else REAR_CAMERA_SELECTOR,
+            facing, mode.extensionMode, probeOnMiss = false)
+
+    val softwareNight: Boolean get() = currentMode == CameraMode.NIGHT && !vendorModeAvailable(CameraMode.NIGHT)
+    val softwarePortrait: Boolean get() = currentMode == CameraMode.PORTRAIT && !vendorModeAvailable(CameraMode.PORTRAIT)
+
+    val enhancedPhotoAvailable: Boolean get() = mActivity !is CaptureActivity &&
+        lensFacing == CameraSelector.LENS_FACING_BACK &&
+        mActivity.resources.getBoolean(R.bool.config_camera_direct_raw_burst) &&
+        mActivity.resources.getBoolean(R.bool.config_camera_prefer_physical_main) &&
+        rawLenses().any { enhancedLensEnabled(it) && supportsNight(it.info) }
+    private fun enhancedLensEnabled(lens: RawLens): Boolean = when(lens.label) {
+        R.string.lens_main -> mActivity.resources.getBoolean(R.bool.config_camera_main_raw_burst)
+        R.string.lens_ultra_wide -> mActivity.resources.getBoolean(R.bool.config_camera_ultra_wide_burst)
+        else -> false
+    }
+    val softwarePhoto: Boolean get() = prefersPhysicalMain && prioritizeCaptureQuality &&
+        mActivity !is CaptureActivity && mActivity.resources.getBoolean(R.bool.config_camera_direct_raw_burst) &&
+        rawLenses().any { enhancedLensEnabled(it) && supportsNight(it.info) &&
+            ((physicalMainBound && it.label==R.string.lens_main) || (physicalWideBound && it.label==R.string.lens_ultra_wide)) }
+    val softwareFastPhoto: Boolean get() = prefersPhysicalMain && physicalWideBound && !prioritizeCaptureQuality &&
+        mActivity.resources.getBoolean(R.bool.config_camera_ultra_wide_jpeg_denoise)
+    val usesProcessingCapture: Boolean get() = softwareNight || softwarePortrait || softwarePhoto || softwareFastPhoto
+    val softwareJpegNight: Boolean get() = BuildConfig.DEBUG && BuildConfig.CAMERA_JPEG_BURST_EVALUATION &&
+        softwareNight && lensFacing == CameraSelector.LENS_FACING_BACK && mActivity !is CaptureActivity &&
+        mActivity.resources.getBoolean(R.bool.config_camera_direct_raw_burst)
+    val softwareJpegBurst: Boolean get() = softwareJpegNight ||
+        (BuildConfig.DEBUG && BuildConfig.CAMERA_JPEG_BURST_EVALUATION &&
+            currentMode == CameraMode.CAMERA && !isVideoMode && mActivity !is CaptureActivity &&
+            lensFacing == CameraSelector.LENS_FACING_BACK && physicalWideBound &&
+            activePhotoOutputFormat == PhotoOutputFormat.JPEG && flashMode == ImageCapture.FLASH_MODE_OFF && !isTorchOn &&
+            (softwarePhoto || softwareFastPhoto))
+    val processingFrameCount: Int get() = if (softwarePortrait || softwareFastPhoto) 0 else if (softwarePhoto) 4 else 8
+
+    private val usesRawLens: Boolean get() = softwareNight ||
+        (currentMode == CameraMode.CAMERA && !isVideoMode && mActivity !is CaptureActivity && photoOutputFormat != PhotoOutputFormat.JPEG)
+
+    var photoOutputFormat: PhotoOutputFormat
+        get() = PhotoOutputFormat.stored(commonPref.getString("photo_output_format", null))
+        set(value) { commonPref.edit { putString("photo_output_format", value.name) } }
+
+    var supportedPhotoOutputFormats: List<PhotoOutputFormat> = listOf(PhotoOutputFormat.JPEG)
+        private set
+
+    var activePhotoOutputFormat = PhotoOutputFormat.JPEG
         private set
 
     var preview: Preview? = null
@@ -324,10 +669,13 @@ class CamConfig(private val mActivity: MainActivity) {
         if (dateStr != null && uri != null) {
             val skip = type == ITEM_TYPE_IMAGE && mActivity is VideoOnlyActivity
             if (!skip) {
-                item = CapturedItem(type, dateStr, Uri.parse(uri))
+                item = CapturedItem(type, dateStr, Uri.parse(uri), commonPref.getBoolean("last_captured_item_is_raw", false))
             }
         }
         lastCapturedItem = item
+        item?.let(app.grapheneos.camera.capturer.PhotoProcessingQueue::resolve)?.let { ready ->
+            if (ready.uri != item.uri) updateLastCapturedItem(ready)
+        }
     }
 
 
@@ -372,7 +720,7 @@ class CamConfig(private val mActivity: MainActivity) {
                 isVideoMode -> {
                     AspectRatio.RATIO_16_9
                 }
-                isQRMode -> {
+                isQRMode || usesRawLens -> {
                     AspectRatio.RATIO_4_3
                 }
                 else -> {
@@ -415,7 +763,8 @@ class CamConfig(private val mActivity: MainActivity) {
                     else -> SettingValues.Default.VIDEO_QUALITY
                 }
             } else {
-                SettingValues.Default.VIDEO_QUALITY
+                if(currentMode==CameraMode.SLOW_MOTION) slowMotionDefaultQualities[lensFacing] ?: Quality.FHD
+                else SettingValues.Default.VIDEO_QUALITY
             }
         }
         set(value) {
@@ -540,7 +889,10 @@ class CamConfig(private val mActivity: MainActivity) {
 
     var includeAudio: Boolean
         get() {
-            return mActivity.settingsDialog.includeAudioToggle.isChecked
+            // High-speed slow motion has no audio track. Keep the ordinary Video
+            // preference so returning to Video restores the user's choice.
+            return currentMode != CameraMode.SLOW_MOTION &&
+                mActivity.settingsDialog.includeAudioToggle.isChecked
         }
         set(value) {
             val editor = commonPref.edit()
@@ -717,12 +1069,29 @@ class CamConfig(private val mActivity: MainActivity) {
         }
 
     private fun saveLastCapturedItem(item: CapturedItem, editor: SharedPreferences.Editor) {
+        editor.putBoolean("last_captured_item_is_raw", item.isRaw)
         editor.putInt(SettingValues.Key.LAST_CAPTURED_ITEM_TYPE, item.type)
         editor.putString(SettingValues.Key.LAST_CAPTURED_ITEM_DATE_STRING, item.dateString)
         editor.putString(SettingValues.Key.LAST_CAPTURED_ITEM_URI, item.uri.toString())
     }
 
+    fun replaceLastCapturedItem(item: CapturedItem?) {
+        lastCapturedItem = null
+        if (item != null) { updateLastCapturedItem(item); return }
+        fun clear(editor: SharedPreferences.Editor) {
+            editor.remove(SettingValues.Key.LAST_CAPTURED_ITEM_TYPE)
+            editor.remove(SettingValues.Key.LAST_CAPTURED_ITEM_DATE_STRING)
+            editor.remove(SettingValues.Key.LAST_CAPTURED_ITEM_URI)
+            editor.remove("last_captured_item_is_raw")
+        }
+        commonPref.edit { clear(this) }
+        if (mActivity is SecureMainActivity) {
+            mActivity.applicationContext.getSharedPreferences(COMMON_SHARED_PREFS_NAME, Context.MODE_PRIVATE).edit { clear(this) }
+        }
+    }
+
     fun updateLastCapturedItem(item: CapturedItem) {
+        if (lastCapturedItem?.dateString?.let { it > item.dateString } == true) return
         commonPref.edit {
             saveLastCapturedItem(item, this)
         }
@@ -1016,7 +1385,6 @@ class CamConfig(private val mActivity: MainActivity) {
             }
             return PhotoCapturePolicy.preferQuality(
                 read(SettingValues.Key.PRIORITIZE_CAPTURE_QUALITY),
-                read(SettingValues.Key.WAIT_FOR_FOCUS_LOCK),
                 mActivity.resources.getBoolean(R.bool.config_camera_prefer_capture_quality)
             )
         }
@@ -1039,7 +1407,34 @@ class CamConfig(private val mActivity: MainActivity) {
             }
         }
 
+    private fun photoResolutionInfo()=try {cameraProvider?.getCameraInfo(cameraSelector)} catch(_:IllegalArgumentException) {null}
+    private fun photoResolutionKey():String? = photoResolutionInfo()?.let {
+        "photo_resolution_"+Camera2CameraInfo.from(it).cameraId+"_"+aspectRatio
+    }
+    val canSelectPhotoResolution:Boolean get()=currentMode==CameraMode.CAMERA && !isVideoMode &&
+        activePhotoOutputFormat==PhotoOutputFormat.JPEG && !softwarePhoto
+    internal fun photoResolutions():List<app.grapheneos.camera.capturer.PhotoResolution> {
+        val info=photoResolutionInfo() ?: return emptyList()
+        val map=Camera2CameraInfo.from(info).getCameraCharacteristic(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP) ?: return emptyList()
+        val sizes=(map.getOutputSizes(android.graphics.ImageFormat.JPEG)?.toList().orEmpty()+
+            map.getHighResolutionOutputSizes(android.graphics.ImageFormat.JPEG)?.toList().orEmpty())
+            .mapNotNull {try {app.grapheneos.camera.capturer.PhotoResolution(it.width,it.height)} catch(_:IllegalArgumentException) {null}}
             .filter { !usesProcessingCapture || app.grapheneos.camera.capturer.ProcessingGeometry.supported(it.width,it.height) }
+        return app.grapheneos.camera.capturer.PhotoResolutionPolicy.advertised(sizes,
+            if(aspectRatio==AspectRatio.RATIO_16_9)16.0/9 else 4.0/3)
+    }
+    internal var photoResolution:app.grapheneos.camera.capturer.PhotoResolution?
+        get() {
+            val key=photoResolutionKey() ?: return null;val stored=commonPref.getString(key,null)
+            val sizes=photoResolutions()
+            if(stored==null && selectHighestResolution)return sizes.firstOrNull()
+            return app.grapheneos.camera.capturer.PhotoResolution.parse(stored)?.takeIf {it in sizes}
+        }
+        set(value) {
+            require(value==null || value in photoResolutions())
+            photoResolutionKey()?.let {key->commonPref.edit {putString(key,value?.preference ?: "auto")}}
+        }
+
     fun migrateFromLegacyPhotoQuality() {
         // If emphasis on quality/optimization was previously set by the user
         if (commonPref.contains(SettingValues.Key.EMPHASIS_ON_QUALITY)) {
@@ -1128,14 +1523,19 @@ class CamConfig(private val mActivity: MainActivity) {
 
     }
 
+    private var initializationInFlight=false
     fun initializeCamera(forced: Boolean = false) {
         if (cameraProvider != null) {
             startCamera(forced = forced)
             return
         }
+        if(initializationInFlight) return
+        initializationInFlight=true
         val cameraProviderFuture = ProcessCameraProvider.getInstance(mActivity)
 
         cameraProviderFuture.addListener(fun() {
+            initializationInFlight=false
+            if(mActivity.isDestroyed || mActivity.isFinishing) return
             val provider: ProcessCameraProvider
             try {
                 provider = cameraProviderFuture.get()
@@ -1152,6 +1552,8 @@ class CamConfig(private val mActivity: MainActivity) {
                 probedCameraProvider = provider
             }
             cameraProvider = provider
+            rawCatalogCache.clear()
+            wideScaleCache = null
 
             // Manually switch to the other lens facing (if the default lens facing isn't
             // supported for the current device)
@@ -1162,6 +1564,10 @@ class CamConfig(private val mActivity: MainActivity) {
                     CameraSelector.LENS_FACING_BACK
                 }
             }
+
+            // Ordinary photo/video do not depend on vendor extensions. Open the
+            // camera now, while extension discovery finishes in the background.
+            if(currentMode.extensionMode==ExtensionMode.NONE) startCamera(forced=forced)
 
             // Despite the name, getInstanceAsync() runs its one-time initialization body
             // synchronously on the calling thread, and that body asks the vendor's extensions
@@ -1179,7 +1585,9 @@ class CamConfig(private val mActivity: MainActivity) {
                         } catch (e: ExecutionException) {
                             mActivity.showMessage(mActivity.getString(R.string.extensions_manager_init_failure))
                         }
-                        startCamera(forced = forced)
+                        if(mActivity.isDestroyed || mActivity.isFinishing || !mActivity.isStarted) return@addListener
+                        if(currentMode.extensionMode==ExtensionMode.NONE && camera!=null) loadTabs()
+                        else startCamera(forced = forced)
                     }, ContextCompat.getMainExecutor(mActivity))
                 } catch (e: Exception) {
                     // getInstanceAsync() runs its initialization synchronously (see above), so it
@@ -1409,7 +1817,7 @@ class CamConfig(private val mActivity: MainActivity) {
         val requestedQuality = supportedVideoQuality()
         val quality = if (requestedQuality == Quality.HIGHEST) qualities.firstOrNull() else requestedQuality
         val cameraId = Camera2CameraInfo.from(cameraInfo).cameraId
-        return "video_frame_rate/$cameraId/${videoQualityPreference(quality ?: Quality.HIGHEST)}" to quality
+        return "${if(currentMode==CameraMode.SLOW_MOTION) "slow_motion_frame_rate" else "video_frame_rate"}/$cameraId/${videoQualityPreference(quality ?: Quality.HIGHEST)}" to quality
     }
 
     // Fixed high-speed rates (120 fps and up) the camera offers at this quality, recorded as slow
@@ -1450,40 +1858,30 @@ class CamConfig(private val mActivity: MainActivity) {
 
     // The saved rate when it is a slow-motion rate this camera and quality still offer.
     private fun savedSlowMotionRate(): VideoFrameRate? {
+        if(currentMode!=CameraMode.SLOW_MOTION) return null
         val cameraInfo = try {
             cameraProvider?.getCameraInfo(cameraSelector) ?: return null
         } catch (exception: IllegalArgumentException) {
             return null
         }
         val (key, quality) = videoFrameRateKey(cameraInfo)
-        val saved = VideoFrameRate.fromPreference(commonPref.getString(key, null)) ?: return null
-        if (!saved.isSlowMotion || quality == null) return null
-        return saved.takeIf { it in slowMotionFrameRates(cameraInfo, quality) }
+        if(quality==null) return null
+        val rates=slowMotionFrameRates(cameraInfo,quality)
+        val saved=VideoFrameRate.fromPreference(commonPref.getString(key,null))
+        return saved?.takeIf {it in rates} ?: rates.firstOrNull()
     }
 
-    // Slow motion binds a constrained high-speed session: video and preview only, encoded for
-    // slowed playback. The regular rates stay listed so the user can leave slow motion.
+    // Slow motion has its own mode and binds only video/preview in a constrained
+    // high-speed session, encoded for slowed playback.
     private fun slowMotionSessionConfig(rate: VideoFrameRate): SessionConfig {
         val cameraInfo = cameraProvider!!.getCameraInfo(cameraSelector)
         val (key, quality) = videoFrameRateKey(cameraInfo)
         videoFrameRatePreferenceKey = key
-        val probe = SessionConfig(useCases = listOf(
-            VideoCapture.withOutput(
-                Recorder.Builder().setQualitySelector(QualitySelector.from(quality!!)).build()
-            ),
-            Preview.Builder().build(),
-        ))
-        val regular = try {
-            cameraInfo.getSupportedFrameRateRanges(probe)
-                .filter { it.lower > 0 && it.upper >= it.lower }
-                .map { VideoFrameRate(it.lower, it.upper) }.toSet()
-        } catch (exception: IllegalArgumentException) {
-            emptySet()
-        } catch (exception: UnsupportedOperationException) {
-            emptySet()
-        }
-        slowMotionVideoFrameRates = slowMotionFrameRates(cameraInfo, quality)
-        availableVideoFrameRates = VideoFrameRate.supportedOptions(listOf(regular)) + slowMotionVideoFrameRates
+        // The former combined Video menu queried ordinary recording rates here.
+        // That result is unused now; avoid another recorder and capability probe
+        // on every SLO-MO bind.
+        slowMotionVideoFrameRates = slowMotionFrameRates(cameraInfo, requireNotNull(quality))
+        availableVideoFrameRates = slowMotionVideoFrameRates
         selectedVideoFrameRate = rate
         lastUnavailableFrameRate = null
         return HighSpeedVideoSessionConfig(
@@ -1536,7 +1934,7 @@ class CamConfig(private val mActivity: MainActivity) {
 
         val regular = VideoFrameRate.supportedOptions(profiles.map { it.frameRates })
         slowMotionVideoFrameRates = quality?.let { slowMotionFrameRates(cameraInfo, it) } ?: emptyList()
-        availableVideoFrameRates = regular + slowMotionVideoFrameRates
+        availableVideoFrameRates = regular
         val stored = commonPref.getString(key, null)
         val requested = VideoFrameRate.fromPreference(stored)
         selectedVideoFrameRate = requested?.takeIf { it in regular }
@@ -1562,10 +1960,26 @@ class CamConfig(private val mActivity: MainActivity) {
         if (preferredFeatures.isNotEmpty()) {
             onFeaturesSelected(lensFacing, preferredFeatures, qualityFeature, profile.features)
         }
-        return selectedVideoFrameRate?.let {
+        val automaticTarget=mActivity.resources.getInteger(R.integer.config_camera_default_preview_fps)
+        val effectiveFrameRate=selectedVideoFrameRate ?: profile.frameRates.firstOrNull {
+            automaticTarget in 1..60 && it.lower==automaticTarget && it.upper==automaticTarget
+        }
+        return effectiveFrameRate?.let {
             SessionConfig(useCases = profile.useCases, requiredFeatureGroup = profile.features,
                 frameRateRange = Range(it.lower, it.upper))
         } ?: SessionConfig(useCases = profile.useCases, requiredFeatureGroup = profile.features)
+    }
+
+    private fun photoSessionConfig(useCases:List<UseCase>,features:List<GroupableFeature>,allowPreference:Boolean):SessionConfig {
+        val automatic=SessionConfig(useCases=useCases,preferredFeatureGroup=features)
+        val target=mActivity.resources.getInteger(R.integer.config_camera_default_preview_fps)
+        if(!allowPreference || target !in 1..60)return automatic
+        val info=cameraProvider?.getCameraInfo(cameraSelector) ?: return automatic
+        return try {
+            val supported=info.getSupportedFrameRateRanges(automatic).any {it.lower==target && it.upper==target}
+            val fixed=if(supported)SessionConfig(useCases=useCases,preferredFeatureGroup=features,frameRateRange=Range(target,target)) else null
+            if(fixed!=null && info.isSessionConfigSupported(fixed))fixed else automatic
+        } catch(_:IllegalArgumentException) {automatic} catch(_:UnsupportedOperationException) {automatic}
     }
 
     // The quality labels shown in the settings spinner, so that a message about a quality can
@@ -1639,10 +2053,30 @@ class CamConfig(private val mActivity: MainActivity) {
     // lenses, if there is one. The extension modes stay on the default camera of a lens facing,
     // which is commonly the only one that vendors offer their extensions for.
     private fun createCameraSelector(lensFacing: Int): CameraSelector {
+        physicalMainBound = false
+        physicalWideBound = false
+        photoLensScale = 1f
+        if (usesPhysicalModeLens && lensFacing == this.lensFacing) selectedRawLens()?.let {
+            photoLensScale = lensDisplayScale(it)
+            return it.selector
+        }
+        if (prefersPhysicalMain) {
+            photoWideMinimum = wideDisplayScale()
+            val main = rawLenses().firstOrNull { it.label == R.string.lens_main }
+            physicalMainBound = requestedPhotoZoom >= 1f && main != null
+            if (physicalMainBound) return main!!.selector
+            if (requestedPhotoZoom < 1f && enhancedPhotoAvailable) {
+                rawLenses().firstOrNull { it.label == R.string.lens_ultra_wide && supportsNight(it.info) }?.let { wide ->
+                    physicalWideBound = true
+                    photoLensScale = photoWideMinimum
+                    return wide.selector
+                }
+            }
+        }
         val builder = CameraSelector.Builder().requireLensFacing(lensFacing)
 
         if (lensFacing == CameraSelector.LENS_FACING_BACK &&
-            currentMode.extensionMode == ExtensionMode.NONE
+            currentMode.extensionMode == ExtensionMode.NONE && currentMode != CameraMode.SLOW_MOTION
         ) {
             builder.addCameraFilter(ZOOM_OUT_CAMERA_FILTER)
         }
@@ -1651,6 +2085,12 @@ class CamConfig(private val mActivity: MainActivity) {
     }
 
     private fun isLensFacingSupported(lensFacing : Int) : Boolean {
+        if(currentMode==CameraMode.SLOW_MOTION) return lensFacing in slowMotionDefaultQualities
+        if (currentMode == CameraMode.NIGHT && !vendorModeAvailable(CameraMode.NIGHT, lensFacing)) return RawLensCatalog.lenses(
+            cameraProvider?.availableCameraInfos ?: emptyList(), lensFacing).any { supportsNight(it.info) }
+        if (currentMode == CameraMode.PORTRAIT && !vendorModeAvailable(CameraMode.PORTRAIT, lensFacing)) {
+            return cameraProvider?.hasCamera(CameraSelector.Builder().requireLensFacing(lensFacing).build()) ?: false
+        }
         var tCameraSelector = CameraSelector.Builder()
             .requireLensFacing(lensFacing)
             .build()
@@ -1672,12 +2112,45 @@ class CamConfig(private val mActivity: MainActivity) {
     }
 
     // Start the camera with latest hard configuration
+    @Volatile var directBurstActive = false
+        internal set
+    private var previewRecoveryGeneration=0L
+
+    /** A stalled session must close before rebinding, rather than immediately reusing its graph. */
+    fun recoverStalledPreview() {
+        if(!mActivity.isStarted || mActivity.imageCapturer.isTakingPicture ||
+            mActivity.videoCapturer.isRecording || directBurstActive) return
+        val old=camera ?: return
+        val generation=++previewRecoveryGeneration
+        val deadline=android.os.SystemClock.elapsedRealtime()+3000
+        mActivity.updateLastFrame();captureResults.clear();cameraProvider?.unbindAll();camera=null
+        fun awaitClosed() {
+            if(generation!=previewRecoveryGeneration || !mActivity.isStarted || mActivity.isDestroyed || mActivity.isFinishing) return
+            if(old.cameraInfo.cameraState.value?.type==androidx.camera.core.CameraState.Type.CLOSED || android.os.SystemClock.elapsedRealtime()>=deadline) {
+                startCamera(forced=true)
+            } else mActivity.previewView.postDelayed({awaitClosed()},50)
+        }
+        awaitClosed()
+    }
+
     @SuppressLint("RestrictedApi")
-    fun startCamera(forced: Boolean = false) {
+    fun startCamera(forced: Boolean = false, preserveCapture: Boolean = false) {
+        if(mActivity.isDestroyed || mActivity.isFinishing || !mActivity.isStarted) return
+        if (directBurstActive) {
+            if (!preserveCapture) mActivity.imageCapturer.cancelAcquiringCapture()
+            return
+        }
         if ((!forced && camera != null) || cameraProvider == null) return
+        previewRecoveryGeneration++
 
         // Cancel any pending capture requests
-        mActivity.imageCapturer.cancelPendingCaptureRequest()
+        if (!preserveCapture) mActivity.imageCapturer.cancelAcquiringCapture()
+        captureResults.clear()
+        nightDetector.reset(clearDismissal = false)
+        mActivity.updateNightSuggestion(false)
+        portraitSubjectX = .5f
+        portraitSubjectY = .5f
+        nightAvailable = rawLenses().any { supportsNight(it.info) }
         availableVideoFrameRates = emptyList()
         selectedVideoFrameRate = null
         slowMotionVideoFrameRates = emptyList()
@@ -1724,8 +2197,9 @@ class CamConfig(private val mActivity: MainActivity) {
 
         // Unbind/close all other camera(s) [if any]
         cameraProvider?.unbindAll()
+        closePreviewProcessing()
 
-        val extMode = currentMode.extensionMode
+        val extMode = if (softwareNight || softwarePortrait) ExtensionMode.NONE else currentMode.extensionMode
         var appliedExtension: Pair<Int, Int>? = null
         if (extMode != ExtensionMode.NONE) {
             val em = extensionsManager
@@ -1736,6 +2210,36 @@ class CamConfig(private val mActivity: MainActivity) {
                 Log.e(TAG, "Mode $currentMode isn't available for this device")
             }
         }
+
+        supportedPhotoOutputFormats = if (currentMode == CameraMode.CAMERA &&
+            mActivity !is CaptureActivity && !isVideoMode && rawLenses().isNotEmpty()) {
+            PhotoOutputFormat.supported(ImageCapture.getImageCaptureCapabilities(
+                cameraProvider!!.getCameraInfo(cameraSelector)).supportedOutputFormats)
+        } else listOf(PhotoOutputFormat.JPEG)
+        activePhotoOutputFormat = PhotoOutputFormat.effective(photoOutputFormat,
+            supportedPhotoOutputFormats, currentMode != CameraMode.CAMERA || isVideoMode)
+        Camera2Interop.Extender(builder).setSessionCaptureCallback(captureResults.forSession())
+        var qualifiedJpegQuality=false
+        if ((!softwareNight || softwareJpegNight) && (!softwarePhoto || softwareJpegBurst) && !isVideoMode &&
+            mActivity.resources.getBoolean(R.bool.config_camera_jpeg_high_quality_noise_reduction)) {
+            val info = Camera2CameraInfo.from(cameraProvider!!.getCameraInfo(cameraSelector))
+            val mode = if (softwareJpegBurst) android.hardware.camera2.CaptureRequest.NOISE_REDUCTION_MODE_FAST
+                else android.hardware.camera2.CaptureRequest.NOISE_REDUCTION_MODE_HIGH_QUALITY
+            if (info.getCameraCharacteristic(CameraCharacteristics.NOISE_REDUCTION_AVAILABLE_NOISE_REDUCTION_MODES)?.contains(mode) == true) {
+                qualifiedJpegQuality=mode == android.hardware.camera2.CaptureRequest.NOISE_REDUCTION_MODE_HIGH_QUALITY
+                Camera2Interop.Extender(builder).setCaptureRequestOption(android.hardware.camera2.CaptureRequest.NOISE_REDUCTION_MODE,
+                    mode)
+            }
+        }
+        // Direct bursts acquire RAW from their own exclusive Camera2 session. Keep
+        // CameraX's framing graph JPEG in that case: CameraX rejects CameraEffect
+        // even on PREVIEW when its ImageCapture is RAW. The user's RAW/DNG output
+        // still uses the original RAW graph when no software burst is selected.
+        val cameraXRawBurst = (softwareNight || softwarePhoto) && !softwareJpegBurst &&
+            !mActivity.resources.getBoolean(R.bool.config_camera_direct_raw_burst)
+        builder.setOutputFormat(if (cameraXRawBurst) ImageCapture.OUTPUT_FORMAT_RAW
+            else if (softwareNight || softwarePhoto) ImageCapture.OUTPUT_FORMAT_JPEG
+            else activePhotoOutputFormat.outputFormat)
 
         val useCasesList = arrayListOf<UseCase>()
 
@@ -1847,9 +2351,10 @@ class CamConfig(private val mActivity: MainActivity) {
                 imageCapture = null
             } else if (!mActivity.requiresVideoModeOnly) {
                 imageCapture = builder.let {
+                    val qualitySingleJpeg=softwareFastPhoto && !softwareJpegBurst && qualifiedJpegQuality
                     val captureMode = PhotoCapturePolicy.captureMode(
-                        preferQuality = prioritizeCaptureQuality,
-                        requestZsl = enableZsl,
+                        preferQuality = (prioritizeCaptureQuality && currentMode != CameraMode.NIGHT && !softwarePhoto) || qualitySingleJpeg,
+                        requestZsl = enableZsl && !softwareJpegBurst && currentMode != CameraMode.NIGHT && !softwarePhoto && !qualitySingleJpeg && activePhotoOutputFormat == PhotoOutputFormat.JPEG,
                         extensionEnabled = appliedExtension != null,
                         videoSnapshot = isVideoMode,
                         flashEnabled = flashMode != ImageCapture.FLASH_MODE_OFF,
@@ -1877,13 +2382,18 @@ class CamConfig(private val mActivity: MainActivity) {
                         }
                     }
 
-                    if (selectHighestResolution) {
+                    val requestedSize=if(canSelectPhotoResolution)photoResolution else null
+                    if(requestedSize!=null) {
+                        resolutionSelectorBuilder.setAllowedResolutionMode(ResolutionSelector.PREFER_HIGHER_RESOLUTION_OVER_CAPTURE_RATE)
+                        resolutionSelectorBuilder.setResolutionStrategy(ResolutionStrategy(Size(requestedSize.width,requestedSize.height),
+                            ResolutionStrategy.FALLBACK_RULE_CLOSEST_LOWER_THEN_HIGHER))
+                    } else if (selectHighestResolution && !canSelectPhotoResolution) {
                         resolutionSelectorBuilder.setAllowedResolutionMode(ResolutionSelector.PREFER_HIGHER_RESOLUTION_OVER_CAPTURE_RATE)
                     }
 
                     it.setResolutionSelector(resolutionSelectorBuilder.build())
 
-                    it.setFlashMode(flashMode)
+                    it.setFlashMode(if (softwareNight || softwarePhoto) ImageCapture.FLASH_MODE_OFF else flashMode)
 
                     it.setJpegQuality(photoQuality)
 
@@ -1896,6 +2406,12 @@ class CamConfig(private val mActivity: MainActivity) {
 
         val previewResolution = ResolutionSelector.Builder()
             .setAspectRatioStrategy(aspectRatioStrategy)
+        val targetPreviewShortEdge = mActivity.resources.getInteger(R.integer.config_camera_preview_target_short_edge)
+        if (targetPreviewShortEdge in 1..2160 && !isVideoMode && !isQRMode && appliedExtension == null) {
+            val width = if (aspectRatio == AspectRatio.RATIO_16_9) targetPreviewShortEdge * 16 / 9 else targetPreviewShortEdge * 4 / 3
+            previewResolution.setResolutionStrategy(ResolutionStrategy(Size(width, targetPreviewShortEdge),
+                ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER))
+        }
         val maxPreviewShortEdge = mActivity.resources.getInteger(
             R.integer.config_camera_preview_max_short_edge
         )
@@ -1937,6 +2453,17 @@ class CamConfig(private val mActivity: MainActivity) {
             else -> previewBuilder.setPreviewStabilizationEnabled(false)
         }
 
+        if (slowMotion == null && appliedExtension == null) {
+            Camera2Interop.Extender(previewBuilder).setSessionCaptureCallback(captureResults.forSession())
+        }
+        if(appliedExtension==null && slowMotion==null) {
+            val nr=mActivity.resources.getInteger(R.integer.config_camera_preview_noise_reduction)
+            val info=Camera2CameraInfo.from(cameraProvider!!.getCameraInfo(cameraSelector))
+            if(nr in 0..4 && info.getCameraCharacteristic(CameraCharacteristics.NOISE_REDUCTION_AVAILABLE_NOISE_REDUCTION_MODES)?.contains(nr)==true)
+                Camera2Interop.Extender(previewBuilder).setCaptureRequestOption(android.hardware.camera2.CaptureRequest.NOISE_REDUCTION_MODE,nr)
+        }
+        mActivity.previewView.implementationMode = if (softwarePortrait && Build.VERSION.SDK_INT >= 33)
+            androidx.camera.view.PreviewView.ImplementationMode.COMPATIBLE else androidx.camera.view.PreviewView.ImplementationMode.PERFORMANCE
         preview = previewBuilder.build().also {
             useCasesList.add(it)
             it.surfaceProvider = mActivity.previewView.surfaceProvider
@@ -2026,12 +2553,31 @@ class CamConfig(private val mActivity: MainActivity) {
             }
         }
 
+        val spatialLuma=if(currentMode==CameraMode.VIDEO)
+            (if(BuildConfig.DEBUG)diagnosticSpatialLuma else null)?.div(100f) ?:
+                (mActivity.resources.getInteger(R.integer.config_camera_video_preview_luma_denoise).coerceIn(0,100)/100f) else 0f
+        if(BuildConfig.DEBUG)app.grapheneos.camera.capturer.PortraitPreviewDiagnostics.spatialLumaApplied=(spatialLuma*100).toInt()
+        val retention=mActivity.resources.getInteger(R.integer.config_camera_preview_temporal_retention)
+        if(BuildConfig.DEBUG)Log.i("TemporalPreview","setup retention="+retention+" wide="+physicalWideBound+" unavailable="+temporalPreviewUnavailable+" mode="+currentMode.name)
+        if(retention in 1..80 && !temporalPreviewUnavailable && appliedExtension==null && slowMotion==null &&
+            !cameraXRawBurst && activePhotoOutputFormat==PhotoOutputFormat.JPEG &&
+            lensFacing==CameraSelector.LENS_FACING_BACK &&
+            (currentMode==CameraMode.VIDEO || currentMode in setOf(CameraMode.CAMERA,CameraMode.NIGHT) &&
+                (physicalWideBound || photoLensScale<.999f))) {
+            val generation=previewRecoveryGeneration
+            temporalPreview=app.grapheneos.camera.ui.TemporalPreviewEffect(retention/100f,spatialLuma) {temporalPreviewFailed(generation)}
+        }
         try {
-            val sessionConfig = when {
+            val baseSession = when {
                 slowMotion != null -> slowMotionSessionConfig(slowMotion)
                 isVideoMode -> videoSessionConfig(useCasesList, preferredFeatures, videoQualityFeature)
-                else -> SessionConfig(useCases = useCasesList, preferredFeatureGroup = preferredFeatures)
+                else -> photoSessionConfig(useCasesList,preferredFeatures,
+                    appliedExtension==null && currentMode!=CameraMode.NIGHT && !isQRMode)
             }
+            val sessionConfig=temporalPreview?.let {effect -> SessionConfig(useCases=baseSession.useCases,
+                viewPort=baseSession.viewPort,effects=listOf(effect),frameRateRange=baseSession.frameRateRange,
+                requiredFeatureGroup=baseSession.requiredFeatureGroup,preferredFeatureGroup=baseSession.preferredFeatureGroup)
+            } ?: baseSession
 
             if (sessionConfig.preferredFeatureGroup.isNotEmpty()) {
                 val requested = preferredFeatures.toList()
@@ -2048,6 +2594,11 @@ class CamConfig(private val mActivity: MainActivity) {
                 sessionConfig
             )
         } catch (exception: RuntimeException) {
+            if(temporalPreview!=null) {
+                if(BuildConfig.DEBUG)Log.w("TemporalPreview","Optional preview bind failed",exception)
+                closePreviewProcessing();temporalPreviewUnavailable=true
+                camera=null;startCamera(forced=true,preserveCapture=preserveCapture);return
+            }
             // A vendor extension can still fail to initialize at bind time even though the
             // pre-flight probe in isExtensionUsable() passed. When one was applied, record the
             // failure so the mode stops being offered, rather than letting the exception kill the
@@ -2090,6 +2641,7 @@ class CamConfig(private val mActivity: MainActivity) {
         }
 
         loadTabs()
+        mActivity.updateComputationalMode()
         mActivity.settingsDialog.reloadFrameRates()
 
         // Every bind hands out a fresh LiveData in extension modes, and the old observer would
@@ -2101,12 +2653,21 @@ class CamConfig(private val mActivity: MainActivity) {
         }
         // The observer above has already run if the activity is started; this covers the case where
         // it has not, so the bar does not claim 1.0x while the camera is zoomed.
-        zoomState = zoomStateSource?.value
+        zoomState = zoomStateSource?.value?.let { photoZoomState(it) }
+        if (prefersPhysicalMain) camera?.cameraControl?.setZoomRatio(app.grapheneos.camera.capturer.PhotoZoomMapping.toLens(requestedPhotoZoom, photoLensScale))
+        if (usesPhysicalModeLens) zoomStateSource?.value?.let {
+            camera?.cameraControl?.setZoomRatio(nightZoom.coerceIn(it.minZoomRatio, it.maxZoomRatio))
+        }
 
+        if(currentMode==CameraMode.VIDEO)zoomStateSource?.value?.let { state ->
+            val requested=(requestedVideoZoom[lensFacing] ?: 1f).coerceIn(state.minZoomRatio,state.maxZoomRatio)
+            camera?.cameraControl?.setZoomRatio(requested)
+        }
         mActivity.zoomBar.updateThumb(false)
 
         camera?.cameraInfo?.exposureState?.let { mActivity.exposureBar.setExposureConfig(it) }
 
+        mActivity.preparePortraitPreview()
         mActivity.settingsDialog.torchToggle.isChecked = false
 
         // Focus camera on touch/tap
@@ -2178,15 +2739,29 @@ class CamConfig(private val mActivity: MainActivity) {
     // probeOnMiss is false because tab refreshes must never pay for a vendor probe on the main
     // thread (see loadTabs); an unprobed mode is left out of the tabs for now, exactly like a
     // transiently-failed probe always was, and comes back on the refresh that follows its probe.
+    private fun supportsNight(info: CameraInfo): Boolean {
+        val c = Camera2CameraInfo.from(info)
+        val caps = c.getCameraCharacteristic(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES) ?: return false
+        return CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_RAW in caps &&
+            CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_MANUAL_SENSOR in caps &&
+            c.getCameraCharacteristic(CameraCharacteristics.SENSOR_COLOR_TRANSFORM1) != null &&
             c.getCameraCharacteristic(CameraCharacteristics.SENSOR_INFO_COLOR_FILTER_ARRANGEMENT) in 0..3 &&
             c.getCameraCharacteristic(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
                 ?.getOutputSizes(android.graphics.ImageFormat.RAW_SENSOR)?.any {
                     app.grapheneos.camera.capturer.ProcessingGeometry.supported(it.width,it.height,raw=true)
                 } == true
+    }
+
     private fun availableModes(): Set<CameraMode> {
         return CameraMode.entries.filter {
             when (it) {
-                CameraMode.CAMERA, CameraMode.VIDEO -> true
+                CameraMode.CAMERA, CameraMode.VIDEO, CameraMode.PORTRAIT -> true
+                CameraMode.SLOW_MOTION -> lensFacing in slowMotionDefaultQualities
+                CameraMode.NIGHT -> arrayOf(CameraSelector.LENS_FACING_BACK, CameraSelector.LENS_FACING_FRONT).any { facing ->
+                    RawLensCatalog.lenses(cameraProvider?.availableCameraInfos ?: emptyList(), facing).any { supportsNight(it.info) }
+                } ||
+                    vendorModeAvailable(CameraMode.NIGHT, CameraSelector.LENS_FACING_BACK) ||
+                    vendorModeAvailable(CameraMode.NIGHT, CameraSelector.LENS_FACING_FRONT)
                 CameraMode.QR_SCAN -> mActivity !is SecureMainActivity
                 else -> {
                     check(it.extensionMode != ExtensionMode.NONE)
@@ -2226,6 +2801,8 @@ class CamConfig(private val mActivity: MainActivity) {
     }
 
     private var extensionProbesInFlight = false
+    private var slowMotionProbed = false
+    private var slowMotionDefaultQualities: Map<Int,Quality> = emptyMap()
 
     private fun loadTabs() {
         if (!mActivity.shouldShowCameraModeTabs()) {
@@ -2242,7 +2819,7 @@ class CamConfig(private val mActivity: MainActivity) {
         // then swipes and taps resolve to no tab and the app simply stays in the current mode.
         // Later refreshes find the cache warm and rebuild synchronously, exactly as before.
         val pending = unprobedExtensions()
-        if (pending.isEmpty()) {
+        if (pending.isEmpty() && slowMotionProbed) {
             buildTabs()
             return
         }
@@ -2258,8 +2835,17 @@ class CamConfig(private val mActivity: MainActivity) {
                 verdicts[key] = probeExtension(provider, em, selector, key.second)
             }
 
+            val slowDefaults=linkedMapOf<Int,Quality>()
+            for((selector,facing) in listOf(FRONT_CAMERA_SELECTOR to CameraSelector.LENS_FACING_FRONT,REAR_CAMERA_SELECTOR to CameraSelector.LENS_FACING_BACK)) {
+                try {
+                    val info=provider.getCameraInfo(selector)
+                    Recorder.getHighSpeedVideoCapabilities(info)?.getSupportedQualities(DynamicRange.SDR)
+                        ?.firstOrNull {slowMotionFrameRates(info,it).isNotEmpty()}?.let {slowDefaults[facing]=it}
+                } catch (_: IllegalArgumentException) { }
+            }
             ContextCompat.getMainExecutor(mActivity).execute {
                 extensionProbesInFlight = false
+                slowMotionDefaultQualities=slowDefaults;slowMotionProbed=true
                 if (mActivity.isDestroyed || mActivity.isFinishing) return@execute
 
                 if (probedCameraProvider !== provider) {
@@ -2322,7 +2908,17 @@ class CamConfig(private val mActivity: MainActivity) {
             return
         }
 
+        val previousZoom = displayZoom
+        val carryLens = if (mode in listOf(CameraMode.NIGHT, CameraMode.PORTRAIT) &&
+            currentMode in listOf(CameraMode.CAMERA, CameraMode.NIGHT, CameraMode.PORTRAIT) && !vendorModeAvailable(mode)) {
+            if (usesPhysicalModeLens) selectedRawLens()
+            else rawLenses().firstOrNull { it.label == if (previousZoom < 1f)
+                R.string.lens_ultra_wide else R.string.lens_main }
+        } else null
+        val carryZoom = if (carryLens != null) previousZoom / lensDisplayScale(carryLens) else 1f
         currentMode = mode
+        if (mode == CameraMode.CAMERA) requestedPhotoZoom = previousZoom
+        carryLens?.let { rawLensId = it.id; nightZoom = carryZoom.coerceAtLeast(1f) }
 
         // The strip highlights whatever the user last touched, but a mode can also change without
         // a touch: keep the highlight on the mode the camera is actually in.
@@ -2337,7 +2933,7 @@ class CamConfig(private val mActivity: MainActivity) {
 
         isQRMode = mode == CameraMode.QR_SCAN
 
-        isVideoMode = mode == CameraMode.VIDEO
+        isVideoMode = mode == CameraMode.VIDEO || mode == CameraMode.SLOW_MOTION
 
         if (isQRMode) {
             mActivity.qrOverlay.visibility = View.VISIBLE

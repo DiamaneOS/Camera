@@ -2,6 +2,8 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
+    <uses-permission android:name="${portraitProcessorPackage}.BIND_PREVIEW"/>
+
     <uses-feature android:name="android.hardware.camera.any"/>
 
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>
@@ -12,6 +14,8 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
     <uses-permission android:name="android.permission.VIBRATE"/>
     <uses-permission android:name="android.permission.WAKE_LOCK"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROCESSING"/>
 
     <!--
       androidx.media3:media3-common declares this for ExoPlayer's network playback. We only pull
@@ -21,6 +25,7 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" tools:node="remove"/>
 
     <queries>
+        <package android:name="${portraitProcessorPackage}" />
         <intent>
             <action android:name="android.intent.action.VIEW" />
             <data android:scheme="*" />
@@ -40,8 +45,27 @@
         android:memtagMode="async"
         tools:ignore="UnusedAttribute">
 
+        <service
+            android:name=".capturer.PortraitPreviewService"
+            android:exported="false"
+            android:isolatedProcess="true"
+            android:process=":camera_processing_preview" />
+        <service
+            android:name=".capturer.PhotoProcessingLifetime"
+            android:exported="false"
+            android:foregroundServiceType="mediaProcessing|shortService" />
+        <service
+            android:name=".capturer.CameraProcessingService"
+            android:exported="false"
+            android:isolatedProcess="true"
+            android:process=":camera_processing" />
+
         <!-- The main activity of the app (supports all modes) -->
+        <provider android:name=".capturer.PortraitCapabilitiesProvider" android:authorities="${applicationId}.portrait" android:exported="true" />
+        <activity android:name=".ui.activities.ExternalPortraitEditorActivity" android:exported="true" android:theme="@style/Theme.App">
             <intent-filter><action android:name="de.diamaneos.intent.action.EDIT_PORTRAIT" /><category android:name="android.intent.category.DEFAULT" /><data android:mimeType="image/jpeg" /></intent-filter>
+        </activity>
+        <activity android:name=".ui.activities.PortraitEditorActivity" android:exported="false" android:theme="@style/Theme.App" />
         <activity
             android:name=".ui.activities.MainActivity"
             android:taskAffinity=".ui.activities.MainActivity"

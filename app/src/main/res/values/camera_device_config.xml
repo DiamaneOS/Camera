@@ -5,6 +5,44 @@
     <!-- Largest short edge of the photo and QR preview in pixels. 0 means no limit. -->
     <integer name="config_camera_preview_max_short_edge">0</integer>
 
+    <!-- Preferred photo preview short edge. 0 keeps CameraX's default ordering. -->
+    <integer name="config_camera_preview_target_short_edge">0</integer>
+
+    <!-- 0 keeps the camera default; a fixed rate is requested only if this stream graph advertises it. -->
+    <integer name="config_camera_default_preview_fps">0</integer>
+    <!-- -1 keeps vendor defaults. Overrides require an explicitly supported Camera2 NR mode. -->
+    <integer name="config_camera_preview_noise_reduction">-1</integer>
+    <!-- 0 disables the SDR ultra-wide viewfinder history; qualified devices may select 1..80 percent. -->
+    <integer name="config_camera_preview_temporal_retention">0</integer>
+    <!-- Optional 0..100 joint bilateral luminance strength for Video preview only. -->
+    <integer name="config_camera_video_preview_luma_denoise">0</integer>
+
+    <!-- Prefer the default physical main sensor at 1x and above, keeping logical zoom-out. -->
+    <bool name="config_camera_prefer_physical_main">false</bool>
+
+    <!-- Use an exclusive Camera2 burst on devices qualified for the RAW + YUV graph. -->
+    <bool name="config_camera_direct_raw_burst">false</bool>
+
+    <!-- Qualified four-frame JPEG processing on the physical ultra-wide in Enhanced quality. -->
+    <bool name="config_camera_ultra_wide_burst">false</bool>
+    <!-- Main-sensor RAW enhancement in Photo; requires the qualified direct RAW graph. -->
+    <bool name="config_camera_main_raw_burst">false</bool>
+
     <!-- Default for Prioritize Capture Quality until the user changes it. -->
     <bool name="config_camera_prefer_capture_quality">false</bool>
+    <bool name="config_camera_ultra_wide_jpeg_denoise">false</bool>
+    <!-- Optional single-frame digital-gain compensation; requires actual exposure/restoration qualification. -->
+    <bool name="config_camera_ultra_wide_jpeg_exposure_compensation">false</bool>
+    <!-- Optional steady Enhanced exposure extension; enable only after output detail/noise qualification. -->
+    <bool name="config_camera_photo_steady_exposure">false</bool>
+    <bool name="config_camera_edge_aware_demosaic">false</bool>
+    <!-- Night-only frequency response; qualify noise and weak texture before enabling. -->
+    <bool name="config_camera_night_frequency_denoise">false</bool>
+    <!-- Zero retains the conservative generic exposure limits. Qualified devices may override. -->
+    <integer name="config_camera_night_handheld_max_exposure_ms">0</integer>
+    <integer name="config_camera_night_steady_max_exposure_ms">0</integer>
+    <bool name="config_camera_jpeg_high_quality_noise_reduction">false</bool>
+    <!-- Optional rear ultra-wide RAW site calibration; empty leaves sensor samples unchanged.
+         Format: width,height,CFA,periodX,periodY,phaseX,phaseY. Applies only to internal RAW inputs. -->
+    <string name="config_camera_ultra_wide_raw_correction_grid" translatable="false"></string>
 </resources>
