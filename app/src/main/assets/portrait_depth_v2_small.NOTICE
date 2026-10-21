@@ -1,0 +1,7 @@
+Depth Anything V2 Small
+Authors: Lihe Yang, Bingyi Kang, Zilong Huang, Xiaogang Xu, Jiashi Feng and Hengshuang Zhao
+Original model: https://huggingface.co/depth-anything/Depth-Anything-V2-Small (Apache-2.0)
+Qualcomm deployment conversion: https://huggingface.co/qualcomm/Depth-Anything-V2/tree/e9f477d3fcf7b78cdbce9b09b9ce109da783b375
+Deployment artifact is subject to the bundled Qualcomm AI Model & Software License, not Apache-2.0.
+Model SHA-256: 0bb8192ef8affcb956f6b1577b3ba3207238357f1fc2516211e0e2b8ff86381c
+Inputs and inference remain offline. No Qualcomm network or accelerator runtime is used.

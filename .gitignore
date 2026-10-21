@@ -90,3 +90,11 @@ lint/generated/
 lint/outputs/
 lint/tmp/
 lint/reports/
+
+# This deployment model may be distributed inside the app, not as a standalone mirror.
+# Fetch the pinned input with tools/portrait-reference/prepare_models.py.
+/app/src/main/assets/portrait_depth_v2_small.tflite
+
+# Engineering/status documentation is maintained in diamaneos-private.
+/docs/
+/tools/*/README.md

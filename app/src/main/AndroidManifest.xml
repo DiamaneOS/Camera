@@ -41,6 +41,7 @@
         tools:ignore="UnusedAttribute">
 
         <!-- The main activity of the app (supports all modes) -->
+            <intent-filter><action android:name="de.diamaneos.intent.action.EDIT_PORTRAIT" /><category android:name="android.intent.category.DEFAULT" /><data android:mimeType="image/jpeg" /></intent-filter>
         <activity
             android:name=".ui.activities.MainActivity"
             android:taskAffinity=".ui.activities.MainActivity"

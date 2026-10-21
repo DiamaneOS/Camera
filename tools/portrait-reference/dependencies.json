@@ -1,0 +1,39 @@
+{
+  "purpose": "Pinned offline Portrait model and CPU runtime inputs",
+  "license": "See each artifact and bundled notices; the Qualcomm depth deployment artifact has a custom license.",
+  "artifacts": [
+    {
+      "file": "magic_touch-v1.tflite",
+      "url": "https://storage.googleapis.com/mediapipe-models/interactive_segmenter/magic_touch/float32/1/magic_touch.tflite",
+      "bytes": 6227884,
+      "sha256": "e24338a717c1b7ad8d159666677ef400babb7f33b8ad60c4d96db4ecf694cd25",
+      "etag": "\"3b1295f91561c13956cb422f714e2d07\"",
+      "generation": "1683146867404767"
+    },
+    {
+      "file": "litert-2.3.0.aar",
+      "url": "https://dl.google.com/dl/android/maven2/com/google/ai/edge/litert/litert/2.3.0/litert-2.3.0.aar",
+      "bytes": 7640140,
+      "sha256": "9508c6e9142646f0f2bc1fe68b3925fb470ee7ddd29114540339a04a8ab189dc",
+      "etag": "\"6e76387\"",
+      "generation": null
+    },
+    {
+      "file": "litert-api-2.3.0.aar",
+      "url": "https://dl.google.com/dl/android/maven2/com/google/ai/edge/litert/litert-api/2.3.0/litert-api-2.3.0.aar",
+      "bytes": 945619,
+      "sha256": "20f630e9ed0b4f0564da616fd3d6406f3013cacad7d492cbe2963330f519256b",
+      "etag": "\"6e7637c\"",
+      "generation": null
+    },
+    {
+      "file": "depth-anything-v2-small.tflite",
+      "asset": "portrait_depth_v2_small.tflite",
+      "url": "https://huggingface.co/qualcomm/Depth-Anything-V2/resolve/e9f477d3fcf7b78cdbce9b09b9ce109da783b375/Depth-Anything-V2.tflite",
+      "bytes": 98928904,
+      "sha256": "0bb8192ef8affcb956f6b1577b3ba3207238357f1fc2516211e0e2b8ff86381c",
+      "license": "Qualcomm AI Model & Software License (DEPLOYMENT_MODEL_LICENSE.pdf); original Small model Apache-2.0",
+      "deploymentLicenseSha256": "4409f93b0e82531303b3e10f52f1fdfb56467a25f05b7441c6bbd8bb8a64b42c"
+    }
+  ]
+}

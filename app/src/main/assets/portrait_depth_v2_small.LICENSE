@@ -1,0 +1,2 @@
+The license of the original trained model can be found at https://github.com/huggingface/transformers/blob/main/LICENSE.
+The license for the deployable model files (.tflite, .onnx, .dlc, .bin, etc.) can be found in DEPLOYMENT_MODEL_LICENSE.pdf.

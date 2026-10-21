@@ -1,0 +1,7 @@
+Depth Anything V2 Small, authors' original checkpoint.
+Source: https://github.com/DepthAnything/Depth-Anything-V2 at a561b849ebae10a6f5ef49e26c83cbbcd36c71bf
+Weights: depth-anything/Depth-Anything-V2-Small at 03876f8651c73a60fe4c2c48294e09fcb6838fcf
+Original weights SHA256: 715fade13be8f229f8a70cc02066f656f2423a59effd0579197bbf57860e1378
+Local fixed224 RGB export: ImageNet normalization, static position encoding, four-dimensional attention,
+weight-only float16 conversion. Builtin LiteRT operators. Preview only; saved-photo model unchanged.
+Export SHA256: bde1e29c8fe0be113901d87ad9fa9070a3ef5d4f1513d9cc65afc1248853a704
