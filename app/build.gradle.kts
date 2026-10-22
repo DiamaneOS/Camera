@@ -193,7 +193,9 @@ android {
 
     defaultConfig {
         applicationId = "app.grapheneos.camera"
-        manifestPlaceholders["portraitProcessorPackage"]="app.grapheneos.camera.processor"
+        // DiamaneOS: the Camera's own preview processor app (module processor).
+        manifestPlaceholders["portraitProcessorPackage"]="de.diamaneos.camera.processor"
+        buildConfigField("String","PORTRAIT_PROCESSOR_PACKAGE","\"de.diamaneos.camera.processor\"")
         minSdk = 29
         targetSdk = 37
         // DiamaneOS: upstream version x 100 + DiamaneOS revision (93.2 = 9302). Always higher than
@@ -224,7 +226,8 @@ android {
             ndk.abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
             buildConfigField("boolean", "CAMERA_NEURAL_DENOISE_TEST", (providers.gradleProperty("cameraNeuralDenoiseTest").orNull=="true").toString())
             applicationIdSuffix = ".dev"
-            manifestPlaceholders["portraitProcessorPackage"]="app.grapheneos.camera.processor.dev"
+            manifestPlaceholders["portraitProcessorPackage"]="de.diamaneos.camera.processor.dev"
+            buildConfigField("String","PORTRAIT_PROCESSOR_PACKAGE","\"de.diamaneos.camera.processor.dev\"")
             proguardFiles("src/debug/gpu-proguard.pro")
             resValue("string", "app_name", "Camera d")
             if(providers.gradleProperty("cameraMinifyDebug").orNull=="true") {

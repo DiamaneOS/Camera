@@ -204,13 +204,13 @@ internal class PortraitPreview(private val context: Context, private val view: P
     private fun bindProcessor():Boolean {
         // An optional companion must have our signature, a distinct UID, no permissions,
         // and a signature-protected service. A different package cannot receive frames.
-        val target=if(app.grapheneos.camera.BuildConfig.DEBUG) "app.grapheneos.camera.processor.dev" else "app.grapheneos.camera.processor"
+        val target=app.grapheneos.camera.BuildConfig.PORTRAIT_PROCESSOR_PACKAGE
         handler.removeCallbacks(initializationTimeout);gpuReady=false;connectionEpoch++
         gpu=false
         if(!gpuFailed) try {
             val manager=context.packageManager
             val info=manager.getPackageInfo(target,android.content.pm.PackageManager.GET_PERMISSIONS)
-            val component=ComponentName(target,"app.grapheneos.camera.processor.PortraitProcessorService")
+            val component=ComponentName(target,"de.diamaneos.camera.processor.PortraitProcessorService")
             val service=manager.getServiceInfo(component,0)
             val permission=manager.getPermissionInfo(target+".BIND_PREVIEW",0)
             if(PreviewWorkerPolicy.declarationsAllowed(info.requestedPermissions) && info.applicationInfo?.uid!=android.os.Process.myUid() &&

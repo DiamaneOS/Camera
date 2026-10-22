@@ -1,4 +1,4 @@
-package app.grapheneos.camera.processor
+package de.diamaneos.camera.processor
 
 import android.opengl.EGL14
 import android.opengl.EGLConfig

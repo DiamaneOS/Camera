@@ -5,7 +5,7 @@
 #include <new>
 #include <vector>
 extern "C" JNIEXPORT jintArray JNICALL
-Java_app_grapheneos_camera_processor_PortraitProcessorService_controls(JNIEnv* env,jobject,jintArray source,jfloatArray mask,jfloatArray depth,jint dw,jint dh,jfloat x,jfloat y) {
+Java_de_diamaneos_camera_processor_PortraitProcessorService_controls(JNIEnv* env,jobject,jintArray source,jfloatArray mask,jfloatArray depth,jint dw,jint dh,jfloat x,jfloat y) {
     auto fail=[&](const char* type,const char* message) {env->ThrowNew(env->FindClass(type),message);};
     constexpr int size=512*512;
     if(!source || !mask || env->GetArrayLength(source)!=size || env->GetArrayLength(mask)!=size) {

@@ -8,10 +8,10 @@ val prepare=tasks.register<Sync>("preparePreviewAssets") {
     into(layout.buildDirectory.dir("generated/preview-assets"))
 }
 android {
-    namespace="app.grapheneos.camera.processor"
+    namespace="de.diamaneos.camera.processor"
     compileSdk=37;buildToolsVersion="37.0.0";ndkVersion="29.0.14206865"
     defaultConfig {
-        applicationId="app.grapheneos.camera.processor";minSdk=33;targetSdk=37
+        applicationId="de.diamaneos.camera.processor";minSdk=33;targetSdk=37
         versionCode=1;versionName="1"
         externalNativeBuild.ndkBuild {arguments+=listOf("APP_STL=c++_static","APP_OPTIM=release")}
     }

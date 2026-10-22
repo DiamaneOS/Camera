@@ -1,4 +1,4 @@
-package app.grapheneos.camera.processor
+package de.diamaneos.camera.processor
 
 import app.grapheneos.camera.capturer.PreviewWorkerPolicy
 import android.app.Service

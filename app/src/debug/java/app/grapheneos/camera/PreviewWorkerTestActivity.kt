@@ -22,7 +22,7 @@ class PreviewWorkerTestActivity:Activity() {
     }
     override fun onCreate(state:Bundle?) {
         super.onCreate(state)
-        val target="app.grapheneos.camera.processor.dev"
+        val target=BuildConfig.PORTRAIT_PROCESSOR_PACKAGE
         var stage="package"
         try {
             val info=packageManager.getPackageInfo(target,PackageManager.GET_PERMISSIONS)
@@ -32,7 +32,7 @@ class PreviewWorkerTestActivity:Activity() {
             row.put("distinctUid",info.applicationInfo?.uid!=android.os.Process.myUid())
             row.put("signaturesMatch",packageManager.checkSignatures(packageName,target)==PackageManager.SIGNATURE_MATCH)
             stage="service"
-            val component=ComponentName(target,"app.grapheneos.camera.processor.PortraitProcessorService")
+            val component=ComponentName(target,"de.diamaneos.camera.processor.PortraitProcessorService")
             val service=packageManager.getServiceInfo(component,0)
             row.put("exported",service.exported).put("enabled",service.enabled)
             row.put("permissionMatches",service.permission==target+".BIND_PREVIEW")
