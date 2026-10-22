@@ -3,6 +3,7 @@ package app.grapheneos.camera.ui.activities
 import android.Manifest
 import android.animation.Animator
 import android.annotation.SuppressLint
+import android.app.AppOpsManager
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
@@ -64,6 +65,7 @@ import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import androidx.core.view.isVisible
 import androidx.core.view.updateLayoutParams
 import androidx.core.view.updateMargins
 import app.grapheneos.camera.App
@@ -248,6 +250,7 @@ open class MainActivity : AppCompatActivity(),
     private val previewWatchdog=object: Runnable {
         override fun run() {
             if(!isStarted || isDestroyed || isFinishing) return
+            camConfig.retryBlockRebind()
             val standardPreview=camConfig.currentMode.extensionMode==androidx.camera.extensions.ExtensionMode.NONE ||
                 camConfig.softwareNight || camConfig.softwarePortrait
             val eligible=lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.RESUMED) && standardPreview &&
@@ -1293,6 +1296,9 @@ open class MainActivity : AppCompatActivity(),
 
     private var isQRDialogShowing = false
 
+    // Not behind a capture review screen or a QR result.
+    internal val previewRebindAllowed get() = !isQRDialogShowing && previewView.isVisible
+
     fun onScanResultSuccess(rawText: String) {
 
         if (isQRDialogShowing) return
@@ -2024,6 +2030,8 @@ open class MainActivity : AppCompatActivity(),
     override fun onStart() {
         super.onStart()
         isStarted = true
+        camConfig.resetBlockRecovery()
+        getSystemService(AppOpsManager::class.java)?.startWatchingMode(AppOpsManager.OPSTR_CAMERA, packageName, cameraAccessListener)
         if (this !is CaptureActivity) {
             for (uri in listOf(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, MediaStore.Video.Media.EXTERNAL_CONTENT_URI)) {
                 contentResolver.registerContentObserver(uri, true, mediaObserver)
@@ -2043,6 +2051,7 @@ open class MainActivity : AppCompatActivity(),
 
     override fun onStop() {
         isStarted = false
+        getSystemService(AppOpsManager::class.java)?.stopWatchingMode(cameraAccessListener)
         contentResolver.unregisterContentObserver(mediaObserver)
         handler.removeCallbacks(thumbnailCheck)
         handler.removeCallbacks(previewWatchdog)
@@ -2126,6 +2135,11 @@ open class MainActivity : AppCompatActivity(),
 
     private val mediaObserver = object : ContentObserver(handler) {
         override fun onChange(selfChange: Boolean) = scheduleThumbnailCheck(500)
+    }
+
+    // Android's camera block changes the camera app op. Called on a binder thread.
+    private val cameraAccessListener = AppOpsManager.OnOpChangedListener { _, _ ->
+        handler.post { if (isStarted) camConfig.onCameraAccessChanged() }
     }
 
     private val captureInProgress get() = imageCapturer.isTakingPicture || videoCapturer.isRecording

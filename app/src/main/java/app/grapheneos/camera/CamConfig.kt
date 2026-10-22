@@ -1,16 +1,19 @@
 package app.grapheneos.camera
 
 import android.annotation.SuppressLint
+import android.app.AppOpsManager
 import android.content.Context
 import android.content.SharedPreferences
 import android.hardware.camera2.CaptureResult
 import android.os.SystemClock
 import androidx.camera.camera2.interop.Camera2Interop
+import app.grapheneos.camera.capturer.CameraBlockRecovery
 import app.grapheneos.camera.capturer.CaptureResultMonitor
 import app.grapheneos.camera.capturer.NightSceneDetector
 import android.hardware.camera2.CameraCharacteristics
 import android.net.Uri
 import android.os.Build
+import android.os.Process
 import android.provider.MediaStore
 import android.util.Log
 import android.util.Range
@@ -30,6 +33,7 @@ import androidx.camera.core.AspectRatio
 import androidx.camera.core.Camera
 import androidx.camera.core.CameraInfo
 import androidx.camera.core.CameraSelector
+import androidx.camera.core.CameraState
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageCapture
 import androidx.camera.core.MirrorMode
@@ -2074,6 +2078,55 @@ class CamConfig(private val mActivity: MainActivity) {
     }
     private var previewRecoveryGeneration=0L
 
+    private val blockRecovery = CameraBlockRecovery()
+    private var cameraStateSource: LiveData<CameraState>? = null
+    private val cameraStateObserver = Observer<CameraState> { state ->
+        val type = when (state.type) {
+            CameraState.Type.OPEN -> CameraBlockRecovery.State.OPEN
+            CameraState.Type.OPENING, CameraState.Type.PENDING_OPEN -> CameraBlockRecovery.State.OPENING
+            else -> CameraBlockRecovery.State.CLOSED
+        }
+        blockRecovery.onCameraState(type, state.error?.code == CameraState.ERROR_CAMERA_DISABLED, cameraAccessAllowed())
+        scheduleBlockRebind()
+    }
+
+    /** Android's camera block (sensor privacy) restricts the camera app op, so a check sees it. */
+    private fun cameraAccessAllowed(): Boolean {
+        val appOps = mActivity.getSystemService(AppOpsManager::class.java) ?: return true
+        return appOps.unsafeCheckOpNoThrow(AppOpsManager.OPSTR_CAMERA, Process.myUid(), mActivity.packageName) !=
+            AppOpsManager.MODE_IGNORED
+    }
+
+    /** The camera app op may have changed. Main thread only. */
+    fun onCameraAccessChanged() {
+        blockRecovery.onAccess(cameraAccessAllowed())
+        scheduleBlockRebind()
+    }
+
+    fun resetBlockRecovery() {
+        blockRecovery.reset()
+        blockRecovery.onAccess(cameraAccessAllowed())
+    }
+
+    // Posted, as a LiveData observer can run inside startCamera().
+    private fun scheduleBlockRebind() {
+        if (blockRecovery.pending) mActivity.previewView.post { retryBlockRebind() }
+    }
+
+    /** A capture, recording or review screen defers the rebind. The preview watchdog retries it. */
+    fun retryBlockRebind() {
+        if (!blockRecovery.pending || mActivity.isDestroyed || mActivity.isFinishing || !mActivity.isStarted ||
+            !mActivity.previewRebindAllowed) return
+        val busy = mActivity.imageCapturer.isTakingPicture || mActivity.videoCapturer.isRecording || directBurstActive
+        if (!blockRecovery.rebindNow(busy)) return
+        if (!cameraAccessAllowed()) {
+            blockRecovery.onAccess(false)
+            return
+        }
+        Log.i(TAG, "Camera access is back, rebinding")
+        startCamera(forced = true)
+    }
+
     /** A stalled session must close before rebinding, rather than immediately reusing its graph. */
     fun recoverStalledPreview() {
         if(!mActivity.isStarted || mActivity.imageCapturer.isTakingPicture ||
@@ -2100,6 +2153,7 @@ class CamConfig(private val mActivity: MainActivity) {
         }
         if ((!forced && camera != null) || cameraProvider == null) return
         previewRecoveryGeneration++
+        blockRecovery.onRebind()
 
         // Cancel any pending capture requests
         if (!preserveCapture) mActivity.imageCapturer.cancelAcquiringCapture()
@@ -2630,6 +2684,10 @@ class CamConfig(private val mActivity: MainActivity) {
         zoomStateSource?.removeObserver(zoomStateObserver)
         zoomStateSource = camera?.cameraInfo?.zoomState?.also {
             it.observe(mActivity, zoomStateObserver)
+        }
+        cameraStateSource?.removeObserver(cameraStateObserver)
+        cameraStateSource = camera?.cameraInfo?.cameraState?.also {
+            it.observe(mActivity, cameraStateObserver)
         }
         // The observer above has already run if the activity is started; this covers the case where
         // it has not, so the bar does not claim 1.0x while the camera is zoomed.
