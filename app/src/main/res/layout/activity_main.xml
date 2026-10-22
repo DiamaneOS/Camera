@@ -249,20 +249,17 @@
                         android:id="@+id/night_suggestion"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:minHeight="48dp"
                         android:text="@string/try_night"
                         android:checkable="false"
                         android:visibility="gone"
                         app:ensureMinTouchTargetSize="true"
-                        app:chipMinHeight="48dp"
+                        app:chipMinHeight="32dp"
                         app:chipBackgroundColor="?attr/colorPrimary"
                         android:textColor="?attr/colorOnPrimary"
                         app:closeIcon="@drawable/cancel"
                         app:closeIconVisible="true"
                         app:closeIconTint="?attr/colorOnPrimary"
-                        app:closeIconSize="24dp"
-                        app:closeIconStartPadding="12dp"
-                        app:closeIconEndPadding="12dp" />
+                        app:closeIconSize="18dp" />
                     <TextView
                         android:id="@+id/processing_status"
                         android:layout_width="wrap_content"
