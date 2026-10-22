@@ -83,6 +83,7 @@ import app.grapheneos.camera.notifier.SensorOrientationChangeNotifier
 import app.grapheneos.camera.ui.BottomTabLayout
 import app.grapheneos.camera.ui.CountDownTimerUI
 import app.grapheneos.camera.ui.CustomGrid
+import app.grapheneos.camera.ui.PreviewPlacement
 import app.grapheneos.camera.ui.QROverlay
 import app.grapheneos.camera.ui.QRToggle
 import app.grapheneos.camera.ui.SettingsDialog
@@ -208,6 +209,7 @@ open class MainActivity : AppCompatActivity(),
     lateinit var muteToggle: ShapeableImageView
 
     private var bottomNavigationBarPadding: Int = 0
+    private var previewSafeTop: Int = 0
 
     private var shouldGyroVibrate = true
     private var hasGyroVibrated = false
@@ -905,11 +907,21 @@ open class MainActivity : AppCompatActivity(),
         rootView = binding.root
 
         mainFrame = binding.mainFrame
+        rootView.addOnLayoutChangeListener { _, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom ->
+            if (right - left != oldRight - oldLeft || bottom - top != oldBottom - oldTop) rootView.post { fitPreviewFrame() }
+        }
+        threeButtons.addOnLayoutChangeListener { _, _, top, _, _, _, oldTop, _, _ ->
+            if (top != oldTop) rootView.post { fitPreviewFrame() }
+        }
 
         qrScanToggles = binding.qrScanToggles
 
         ViewCompat.setOnApplyWindowInsetsListener(rootView) { view, windowInsets ->
             val insets = windowInsets.getInsetsIgnoringVisibility(WindowInsetsCompat.Type.systemBars())
+            previewSafeTop = windowInsets.getInsetsIgnoringVisibility(
+                WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout()
+            ).top + (8 * resources.displayMetrics.density).toInt()
+            rootView.post { fitPreviewFrame() }
 
             view.layoutParams = (view.layoutParams as ViewGroup.MarginLayoutParams).let {
                 it.setMargins(
@@ -1031,6 +1043,32 @@ open class MainActivity : AppCompatActivity(),
         if (params.bottomMargin != bottom) {
             params.bottomMargin = bottom
             tabLayout.layoutParams = params
+        }
+    }
+
+    // A preview that fits above the controls at full width sits right above them. A taller one
+    // fills the width from below the status bar and cutout and runs under the controls. One too
+    // tall even for that keeps the fit above the controls.
+    fun fitPreviewFrame() {
+        if (!this::mainFrame.isInitialized || rootView.width == 0 || threeButtons.height == 0) return
+        val gap = resources.getDimensionPixelSize(R.dimen.preview_controls_gap)
+        val preview = previewView.layoutParams as ConstraintLayout.LayoutParams
+        val fill = PreviewPlacement.fillsWidth(rootView.width, rootView.height, previewSafeTop,
+            threeButtons.top - gap, preview.dimensionRatio)
+        val frame = mainFrame.layoutParams as RelativeLayout.LayoutParams
+        val top = if (fill) previewSafeTop else 0
+        val bottom = if (fill) 0 else gap
+        val above = if (fill) 0 else R.id.three_buttons
+        if (frame.topMargin != top || frame.bottomMargin != bottom || frame.getRule(RelativeLayout.ABOVE) != above) {
+            frame.topMargin = top
+            frame.bottomMargin = bottom
+            if (fill) frame.removeRule(RelativeLayout.ABOVE) else frame.addRule(RelativeLayout.ABOVE, R.id.three_buttons)
+            mainFrame.layoutParams = frame
+        }
+        val bias = if (fill) 0f else 1f
+        if (preview.verticalBias != bias) {
+            preview.verticalBias = bias
+            previewView.layoutParams = preview
         }
     }
 
@@ -1706,6 +1744,7 @@ open class MainActivity : AppCompatActivity(),
         camConfig.preview?.targetRotation = previewView.display?.rotation ?: Surface.ROTATION_0
         camConfig.camera?.cameraInfo?.let {
             previewView.applyPreviewRatio(camConfig.aspectRatio, it)
+            fitPreviewFrame()
         }
 
         rootView.post { sensorNotifier?.notifyListeners() }

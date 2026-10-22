@@ -24,4 +24,5 @@
 
     <item name="settings_dialog_switch_scale" format="float" type="integer">0.8</item>
     <dimen name="camera_control_radius">8dp</dimen>
+    <dimen name="preview_controls_gap">24dp</dimen>
 </resources>

@@ -2652,7 +2652,10 @@ class CamConfig(private val mActivity: MainActivity) {
 
         // Focus camera on touch/tap
         mActivity.previewView.setOnTouchListener(mActivity)
-        camera?.cameraInfo?.let { mActivity.previewView.applyPreviewRatio(aspectRatio, it) }
+        camera?.cameraInfo?.let {
+            mActivity.previewView.applyPreviewRatio(aspectRatio, it)
+            mActivity.fitPreviewFrame()
+        }
 
         if (isInPhotoMode) {
             mActivity.sensorNotifier?.forceUpdateGyro()
