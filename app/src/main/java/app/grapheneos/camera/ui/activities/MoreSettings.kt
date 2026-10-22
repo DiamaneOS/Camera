@@ -243,9 +243,13 @@ open class MoreSettings : AppCompatActivity(), TextView.OnEditorActionListener {
         highResToggle.setOnClickListener {
             camConfig.selectHighestResolution = !camConfig.selectHighestResolution
         }
-
-        highResSetting.setOnClickListener {
-            highResToggle.performClick()
+        refreshResolution()
+        resolutionSetting.setOnClickListener {
+            if(!camConfig.canSelectPhotoResolution) {showMessage(getString(R.string.photo_resolution_automatic_mode));return@setOnClickListener}
+            MaterialAlertDialogBuilder(this).setTitle(R.string.photo_resolution)
+                .setSingleChoiceItems(choices.map(::title).toTypedArray(),choices.indexOf(camConfig.photoResolution).coerceAtLeast(0)) {dialog,index->
+                    camConfig.photoResolution=choices[index];refreshResolution();dialog.dismiss()
+                }.setNegativeButton(android.R.string.cancel,null).show()
         }
 
         if (!showStorageSettings) {

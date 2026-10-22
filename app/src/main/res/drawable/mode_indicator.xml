@@ -5,7 +5,7 @@
         android:left="-12dp"
         android:right="-12dp">
         <shape android:shape="rectangle">
-            <corners android:radius="27.5dp" />
+            <corners android:radius="@dimen/camera_control_radius" />
         </shape>
     </item>
 </layer-list>

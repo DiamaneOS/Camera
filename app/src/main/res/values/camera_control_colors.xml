@@ -1,0 +1,6 @@
+<resources>
+    <!-- Stable white-control contrast even when the live image is bright. -->
+    <color name="camera_control_scrim">#8A000000</color>
+    <color name="camera_settings_scrim">#73000000</color>
+    <color name="camera_control_scrim_pressed">#B3000000</color>
+</resources>

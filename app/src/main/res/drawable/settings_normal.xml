@@ -8,11 +8,11 @@
             <padding
                 android:left="8dp"
                 android:right="8dp"/>
-            <solid android:color="?attr/colorSurface"/>
-            <corners android:radius="100dp"/>
+            <solid android:color="@color/camera_settings_scrim"/>
+            <corners android:radius="@dimen/camera_control_radius"/>
         </shape>
     </item>
-    <item android:drawable="@drawable/dropdown"
+    <item android:drawable="@drawable/settings_expand"
         android:width="24dp"
         android:height="24dp"
         android:gravity="center"/>

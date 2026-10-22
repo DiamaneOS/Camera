@@ -3,6 +3,7 @@ package app.grapheneos.camera.ui.activities
 import android.Manifest
 import android.animation.Animator
 import android.annotation.SuppressLint
+import android.app.AppOpsManager
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
@@ -66,12 +67,10 @@ import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
-import androidx.core.view.marginTop
+import androidx.core.view.isVisible
 import androidx.core.view.updateLayoutParams
 import androidx.core.view.updateMargins
 import app.grapheneos.camera.App
-import app.grapheneos.camera.CamConfig
-import app.grapheneos.camera.CameraMode
 import app.grapheneos.camera.CapturedItem
 import app.grapheneos.camera.CapturedItems
 import app.grapheneos.camera.ITEM_TYPE_IMAGE
@@ -89,6 +88,7 @@ import app.grapheneos.camera.notifier.SensorOrientationChangeNotifier
 import app.grapheneos.camera.ui.BottomTabLayout
 import app.grapheneos.camera.ui.CountDownTimerUI
 import app.grapheneos.camera.ui.CustomGrid
+import app.grapheneos.camera.ui.PreviewPlacement
 import app.grapheneos.camera.ui.QROverlay
 import app.grapheneos.camera.ui.QRToggle
 import app.grapheneos.camera.ui.SettingsDialog
@@ -234,6 +234,7 @@ open class MainActivity : AppCompatActivity(),
     lateinit var muteToggle: ShapeableImageView
 
     private var bottomNavigationBarPadding: Int = 0
+    private var previewSafeTop: Int = 0
 
     private var shouldGyroVibrate = true
     private var hasGyroVibrated = false
@@ -263,6 +264,25 @@ open class MainActivity : AppCompatActivity(),
     }
 
     private val handler = Handler(Looper.getMainLooper())
+    private val previewRecoveryPolicy=app.grapheneos.camera.capturer.PreviewRecoveryPolicy()
+    private val resumeRebind=app.grapheneos.camera.capturer.ResumeRebind()
+    private val previewWatchdog=object: Runnable {
+        override fun run() {
+            if(!isStarted || isDestroyed || isFinishing) return
+            camConfig.retryBlockRebind()
+            val busy=videoCapturer.isRecording || imageCapturer.isTakingPicture || camConfig.directBurstActive
+            if(resumeRebind.afterRecording(busy) && resumeRebindAllowed) camConfig.startCamera(forced=true)
+            val standardPreview=camConfig.currentMode.extensionMode==androidx.camera.extensions.ExtensionMode.NONE ||
+                camConfig.softwareNight || camConfig.softwarePortrait
+            val eligible=lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.RESUMED) && standardPreview &&
+                !camConfig.isVideoMode && !camConfig.isQRMode && !camConfig.directBurstActive &&
+                !imageCapturer.isTakingPicture && !videoCapturer.isRecording &&
+                camConfig.camera?.cameraInfo?.cameraState?.value?.type==androidx.camera.core.CameraState.Type.OPEN
+            val healthy=previewView.previewStreamState.value==StreamState.STREAMING && camConfig.captureResults.hasRecentFrame()
+            if(previewRecoveryPolicy.observe(android.os.SystemClock.elapsedRealtime(),eligible,healthy)) camConfig.recoverStalledPreview()
+            handler.postDelayed(this,1000)
+        }
+    }
 
     private lateinit var snackBar: Snackbar
 
@@ -295,6 +315,33 @@ open class MainActivity : AppCompatActivity(),
         }
         showAudioPermissionDeniedDialog {
             videoCapturer.startRecording()
+        }
+    }
+
+    private var processingCaptureAfterPermission = false
+    private val processingNotificationPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) {
+        if (isStarted && camConfig.usesProcessingCapture) {
+            processingCaptureAfterPermission = true
+            previewView.postDelayed({ resumeProcessingCaptureAfterPermission() }, 400)
+        }
+    }
+
+    fun ensureProcessingNotificationPermission(): Boolean {
+        if (Build.VERSION.SDK_INT < 33 || this is SecureActivity ||
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED ||
+            camConfig.commonPref.getBoolean("processing_notification_permission_asked", false)) return true
+        camConfig.commonPref.edit().putBoolean("processing_notification_permission_asked", true).apply()
+        processingNotificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+        return false
+    }
+
+    private fun resumeProcessingCaptureAfterPermission() {
+        if (processingCaptureAfterPermission && isStarted &&
+            lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.RESUMED) &&
+            previewView.previewStreamState.value == StreamState.STREAMING &&
+            camConfig.camera?.cameraInfo?.cameraState?.value?.type == androidx.camera.core.CameraState.Type.OPEN) {
+            processingCaptureAfterPermission = false
+            if (camConfig.usesProcessingCapture) imageCapturer.takePicture()
         }
     }
 
@@ -385,12 +432,17 @@ open class MainActivity : AppCompatActivity(),
         setBlurBitmapCompat(mainOverlay, lastFrame)
         settingsIcon.visibility = View.INVISIBLE
         settingsIcon.isEnabled = false
+        mainOverlay.animate().cancel()
+        mainOverlay.alpha = 1f
         mainOverlay.visibility = View.VISIBLE
     }
 
     private fun hidePreviewTransition() {
         transitionShown = false
-        mainOverlay.visibility = View.INVISIBLE
+        // DiamaneOS: a new camera's first frames stay under the still until they settle.
+        if (!holdPreviewUntilSettled()) {
+            revealPreview()
+        }
 
         if (camConfig.isQRMode) {
             return
@@ -401,7 +453,7 @@ open class MainActivity : AppCompatActivity(),
             settingsIcon.visibility = View.VISIBLE
         }
 
-        settingsIcon.isEnabled = true
+        settingsIcon.isEnabled = !imageCapturer.isProcessingCapture && !camConfig.directBurstActive
     }
 
     fun updateLastFrame() {
@@ -502,6 +554,40 @@ open class MainActivity : AppCompatActivity(),
     private fun hasFreshPrefetch(): Boolean = framePrefetchedAt != 0L &&
             SystemClock.uptimeMillis() - framePrefetchedAt < PREFETCH_FRESHNESS_MS
 
+    // Covers the preview with its last frame before an unbind, so no blank frame shows in between.
+    fun showLastFrame() = showPreviewTransition()
+
+    // Holds the previous camera's last frame over a rebind until the new camera has settled.
+    internal val previewHold = app.grapheneos.camera.capturer.PreviewSettle.Hold()
+    private var previewHoldTimer: Runnable? = null
+
+    internal fun previewSettled(generation: Long) {
+        if (previewHold.settle(generation) && previewView.previewStreamState.value == StreamState.STREAMING) revealPreview()
+    }
+
+    // True while the still stays over a new camera that streams but has not settled yet. It goes
+    // once the camera settles (previewSettled) or the hold runs out.
+    private fun holdPreviewUntilSettled(): Boolean {
+        if (!previewHold.streaming(SystemClock.elapsedRealtime())) return false
+        val generation = previewHold.current()
+        previewHoldTimer?.let(handler::removeCallbacks)
+        previewHoldTimer = Runnable {
+            previewHoldTimer = null
+            if (previewHold.expired(generation, SystemClock.elapsedRealtime()) &&
+                previewView.previewStreamState.value == StreamState.STREAMING) revealPreview()
+        }.also { handler.postDelayed(it, app.grapheneos.camera.capturer.PreviewSettle.MAX_HOLD_MS) }
+        return true
+    }
+
+    private fun revealPreview() {
+        if (transitionShown || mainOverlay.visibility != View.VISIBLE) return
+        mainOverlay.animate().cancel()
+        mainOverlay.animate().alpha(0f).setDuration(120).withEndAction {
+            mainOverlay.visibility = View.INVISIBLE
+            mainOverlay.alpha = 1f
+        }.start()
+    }
+
     private fun animateFocusRing(x: Float, y: Float) {
 
         // Move the focus ring so that its center is at the tap location (x, y)
@@ -573,11 +659,15 @@ open class MainActivity : AppCompatActivity(),
                 it.putExtra(InAppGallery.INTENT_KEY_SECURE_MODE, true)
 
                 val list = capturedItems
-                if (list.isEmpty()) {
-                    showMessage(R.string.no_image)
+                val keyguard=getSystemService(android.app.KeyguardManager::class.java)
+                if (!keyguard.isKeyguardLocked) {
+                    it.putExtra(InAppGallery.INTENT_KEY_SECURE_MODE,false)
+                } else if (list.isEmpty()) {
+                    keyguard.requestDismissKeyguard(this,object: android.app.KeyguardManager.KeyguardDismissCallback() {
+                        override fun onDismissSucceeded() {if(!isDestroyed) openGallery()}
+                    })
                     return
-                }
-                it.putParcelableArrayListExtra(InAppGallery.INTENT_KEY_LIST_OF_SECURE_MODE_CAPTURED_ITEMS, list)
+                } else it.putParcelableArrayListExtra(InAppGallery.INTENT_KEY_LIST_OF_SECURE_MODE_CAPTURED_ITEMS, list)
             } else {
                 it.putExtra(InAppGallery.INTENT_KEY_VIDEO_ONLY_MODE, requiresVideoModeOnly)
             }
@@ -597,7 +687,7 @@ open class MainActivity : AppCompatActivity(),
         ) == PackageManager.PERMISSION_GRANTED
     }
 
-    private fun checkPermissions() {
+    private fun checkPermissions(forceRebind: Boolean = false) {
         Log.i(TAG, "Checking camera status...")
 
         // Check if the app has access to the user's camera
@@ -609,7 +699,7 @@ open class MainActivity : AppCompatActivity(),
                 Log.i(TAG, "Permission granted.")
 
                 // Setup the camera since the permission is available
-                camConfig.initializeCamera()
+                camConfig.initializeCamera(forceRebind)
             }
             shouldShowRequestPermissionRationale(Manifest.permission.CAMERA) -> {
 
@@ -708,6 +798,7 @@ open class MainActivity : AppCompatActivity(),
 
     override fun onResume() {
         super.onResume()
+        previewRecoveryPolicy.reset();handler.removeCallbacks(previewWatchdog);handler.postDelayed(previewWatchdog,1000)
         resumeOrientationSensor()
         // Check camera permission again if the user switches back to the app (maybe
         // after enabling/disabling the camera permission in Settings)
@@ -722,6 +813,9 @@ open class MainActivity : AppCompatActivity(),
             camConfig.fetchLastCapturedItemFromSharedPrefs()
         }
 
+        app.grapheneos.camera.capturer.PhotoProcessingQueue.resume()
+        if (this !is SecureActivity) app.grapheneos.camera.capturer.PhotoProcessingQueue.applyPendingStorageReset()
+        refreshProcessingThumbnail()
         updateThumbnail()
 
         if (camConfig.requireLocation) {
@@ -751,15 +845,17 @@ open class MainActivity : AppCompatActivity(),
         // Leaving a mode switch waiting on an animation that will never finish would strand the
         // strip on a mode the camera never entered.
         tabLayout.settleNow()
+        if (Build.VERSION.SDK_INT >= 33) portraitPreview?.pause()
         pauseOrientationSensor()
 
         // The countdown would otherwise keep ticking while the app is in the background and fire a
         // capture into a camera that has already been unbound.
         cdTimer.cancelTimer()
+        previewHoldTimer?.let(handler::removeCallbacks); previewHoldTimer = null
         if (camConfig.isQRMode) {
             cancelFocusTimer()
         } else {
-            imageCapturer.cancelPendingCaptureRequest()
+            imageCapturer.cancelAcquiringCapture()
         }
         if (camConfig.requireLocation) {
             application.dropLocationUpdates()
@@ -773,6 +869,10 @@ open class MainActivity : AppCompatActivity(),
     @SuppressLint("ClickableViewAccessibility")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Recents shows a blank card instead of the last camera frame.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            setRecentsScreenshotEnabled(false)
+        }
         binding = ActivityMainBinding.inflate(layoutInflater)
         snackBar = Snackbar.make(binding.root, "", Snackbar.LENGTH_LONG)
 
@@ -787,6 +887,14 @@ open class MainActivity : AppCompatActivity(),
         previewLoader = binding.previewLoading
         imagePreview = binding.imagePreview
         previewView = binding.preview
+        binding.nightSuggestion.closeIconContentDescription = getString(R.string.dismiss_night_suggestion)
+        binding.nightSuggestion.setOnCloseIconClickListener { camConfig.dismissNightSuggestion() }
+        binding.nightSuggestion.setOnClickListener {
+            if (!imageCapturer.isTakingPicture && !videoCapturer.isRecording) {
+                tabLayout.getTabForMode(CameraMode.NIGHT)?.let { finalizeMode(it) }
+            }
+        }
+        binding.cancelProcessing.setOnClickListener { imageCapturer.cancelPendingCaptureRequest() }
         previewView.scaleType = PreviewView.ScaleType.FIT_START
         previewContainer = binding.previewContainer
         bottomOverlay = binding.bottomOverlay
@@ -811,6 +919,7 @@ open class MainActivity : AppCompatActivity(),
                 camConfig.reloadSettings()
 
                 restartRecordingIfPermissionsWasUnavailable()
+                resumeProcessingCaptureAfterPermission()
             } else {
                 showPreviewTransition()
             }
@@ -846,6 +955,7 @@ open class MainActivity : AppCompatActivity(),
             true
         }
         flipCameraCircle.setOnClickListener {
+            if (camConfig.directBurstActive || imageCapturer.isProcessingCapture) return@setOnClickListener
             resetAutoSleep()
             if (camConfig.isQRMode) {
                 camConfig.scanAllCodes = !camConfig.scanAllCodes
@@ -954,39 +1064,14 @@ open class MainActivity : AppCompatActivity(),
 
         threeButtons = binding.threeButtons
         settingsIcon = binding.settingsOption
+        previewView.addOnLayoutChangeListener { _,_,_,_,_,_,_,_,_ -> updateLensControls() }
+        settingsIcon.addOnLayoutChangeListener { _,_,_,_,_,_,_,_,_ -> updateLensControls() }
+        threeButtons.addOnLayoutChangeListener { _,_,_,_,_,_,_,_,_ -> updateLensControls() }
+        binding.lensControls.addOnLayoutChangeListener { _,_,_,_,_,_,_,_,_ -> updateLensControls() }
         settingsIcon.setOnClickListener {
-            if (!camConfig.isQRMode)
+            if (!camConfig.isQRMode && !camConfig.directBurstActive && !imageCapturer.isProcessingCapture)
                 settingsDialog.show()
         }
-
-        settingsIcon.viewTreeObserver.addOnGlobalLayoutListener(
-            object : ViewTreeObserver.OnGlobalLayoutListener {
-                override fun onGlobalLayout() {
-                    rootView.viewTreeObserver.removeOnGlobalLayoutListener(this)
-                    val displayCutout = window.decorView.rootWindowInsets.displayCutout
-                    val layoutParams = (settingsIcon.layoutParams as RelativeLayout.LayoutParams)
-
-                    val rect = if (displayCutout?.boundingRects?.isNotEmpty() == true)
-                        displayCutout.boundingRects.first() else null
-
-                    val windowsSize = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                        windowManager.currentWindowMetrics.bounds
-                    } else {
-                        val size = Point()
-                        // defaultDisplay isn't deprecated below API 30 as highlighted by the IDE
-                        // and this code would only execute if it is (Hint: enclosing if-block)
-                        @Suppress("DEPRECATION")
-                        windowManager.defaultDisplay.getRealSize(size)
-                        Rect(0, 0, size.x, size.y)
-                    }
-
-                    if (rect == null || rect.left <= 0 || rect.right == windowsSize.right) {
-                        layoutParams.addRule(RelativeLayout.CENTER_HORIZONTAL)
-                    } else {
-                        layoutParams.addRule(RelativeLayout.ALIGN_PARENT_LEFT)
-                    }
-                }
-            })
 
         exposurePlusIcon = binding.exposurePlusIcon
         exposureNegIcon = binding.exposureNegIcon
@@ -1020,13 +1105,21 @@ open class MainActivity : AppCompatActivity(),
         }
 
         mainFrame = binding.mainFrame
+        rootView.addOnLayoutChangeListener { _, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom ->
+            if (right - left != oldRight - oldLeft || bottom - top != oldBottom - oldTop) rootView.post { fitPreviewFrame() }
+        }
+        threeButtons.addOnLayoutChangeListener { _, _, top, _, _, _, oldTop, _, _ ->
+            if (top != oldTop) rootView.post { fitPreviewFrame() }
+        }
 
         qrScanToggles = binding.qrScanToggles
 
-        var isInsetSet = false
-
         ViewCompat.setOnApplyWindowInsetsListener(rootView) { view, windowInsets ->
             val insets = windowInsets.getInsetsIgnoringVisibility(WindowInsetsCompat.Type.systemBars())
+            previewSafeTop = windowInsets.getInsetsIgnoringVisibility(
+                WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout()
+            ).top + (8 * resources.displayMetrics.density).toInt()
+            rootView.post { fitPreviewFrame() }
 
             view.layoutParams = (view.layoutParams as ViewGroup.MarginLayoutParams).let {
                 it.setMargins(
@@ -1042,20 +1135,11 @@ open class MainActivity : AppCompatActivity(),
             zoomBarPanel.setPadding(0, 0, 0, insets.bottom)
             exposureBarPanel.setPadding(0, 0, 0, insets.bottom)
             bottomNavigationBarPadding = insets.bottom
+            repositionTabLayout()
 
-            if (insets.top != 0 && !isInsetSet) {
-                mainFrame.layoutParams =
-                    (mainFrame.layoutParams as ViewGroup.MarginLayoutParams).let {
-                        it.setMargins(
-                            it.leftMargin,
-                            (8 * resources.displayMetrics.density.toInt()) + insets.top,
-                            it.rightMargin,
-                            it.bottomMargin,
-                        )
-
-                        it
-                    }
-
+            // Camera pixels can extend under the hidden status bar. Keep only
+            // interactive QR controls inside its safe area; no empty header.
+            run {
                 qrScanToggles.layoutParams =
                     (qrScanToggles.layoutParams as ViewGroup.MarginLayoutParams).let {
                         it.setMargins(
@@ -1068,8 +1152,6 @@ open class MainActivity : AppCompatActivity(),
 
                         it
                     }
-
-                isInsetSet = true
             }
 
             WindowInsetsCompat.CONSUMED
@@ -1102,15 +1184,7 @@ open class MainActivity : AppCompatActivity(),
 
         micOffIcon = binding.micOff
 
-        previewView.viewTreeObserver.addOnPreDrawListener(
-            object : ViewTreeObserver.OnPreDrawListener {
-                override fun onPreDraw(): Boolean {
-                    previewView.viewTreeObserver.removeOnPreDrawListener(this)
-                    repositionTabLayout()
-                    return true
-                }
-            }
-        )
+        repositionTabLayout()
 
         moreOptionsToggle = binding.moreOptions
         moreOptionsToggle.setOnClickListener {
@@ -1161,51 +1235,198 @@ open class MainActivity : AppCompatActivity(),
     }
 
     private fun repositionTabLayout() {
-
         threeButtons.visibility = View.VISIBLE
+        val bottom = bottomNavigationBarPadding + (8 * resources.displayMetrics.density).toInt()
+        val params = tabLayout.layoutParams as ViewGroup.MarginLayoutParams
+        if (params.bottomMargin != bottom) {
+            params.bottomMargin = bottom
+            tabLayout.layoutParams = params
+        }
+    }
 
-        tabLayout.viewTreeObserver.addOnPreDrawListener(
-            object : ViewTreeObserver.OnPreDrawListener {
-                override fun onPreDraw(): Boolean {
+    // A preview that fits above the controls at full width sits right above them. A taller one
+    // fills the width and ends above the mode tabs, so the whole capture row lies on it. One too
+    // tall even for that keeps the fit above the controls.
+    fun fitPreviewFrame() {
+        if (!this::mainFrame.isInitialized || rootView.width == 0 || threeButtons.height == 0) return
+        previewFrameMoved = true
+        val gap = resources.getDimensionPixelSize(R.dimen.preview_controls_gap)
+        val preview = previewView.layoutParams as ConstraintLayout.LayoutParams
+        val tabsTop = tabLayout.top - (tabLayout.layoutParams as ViewGroup.MarginLayoutParams).topMargin
+        val fill = PreviewPlacement.fillsWidth(rootView.width, previewSafeTop, threeButtons.top - gap,
+            tabsTop, preview.dimensionRatio)
+        val frame = mainFrame.layoutParams as RelativeLayout.LayoutParams
+        val top = if (fill) previewSafeTop else 0
+        val bottom = if (fill) 0 else gap
+        val above = if (fill) R.id.camera_mode_tabs else R.id.three_buttons
+        if (frame.topMargin != top || frame.bottomMargin != bottom || frame.getRule(RelativeLayout.ABOVE) != above) {
+            frame.topMargin = top
+            frame.bottomMargin = bottom
+            frame.addRule(RelativeLayout.ABOVE, above)
+            mainFrame.layoutParams = frame
+        }
+    }
 
-                    tabLayout.viewTreeObserver
-                        .removeOnPreDrawListener(
-                            this
-                        )
+    fun updateNightSuggestion(suggested: Boolean) {
+        if (!this::binding.isInitialized) return
+        binding.nightSuggestion.visibility = if (suggested && camConfig.currentMode == CameraMode.CAMERA &&
+            !camConfig.isVideoMode && !imageCapturer.isTakingPicture &&
+            (!this::settingsDialog.isInitialized || !settingsDialog.isShowing)) View.VISIBLE else View.GONE
+    }
 
-                    val previewHeight169 = previewContainer.width * 16 / 9
+    // While the camera is off the shutter is dimmed and a press only says why, in every mode.
+    fun updateCaptureAvailability(blocked: Boolean) {
+        if (!this::captureButton.isInitialized) return
+        captureButton.alpha = if (blocked) 0.4f else 1f
+        ViewCompat.setStateDescription(captureButton, if (blocked) getString(R.string.camera_access_off) else null)
+    }
 
-                    val extraHeight169 = previewContainer.height -
-                            previewHeight169 -
-                            tabLayout.height -
-                            10 * resources.displayMetrics.density.toInt()
+    // The preview frame may have changed since the last drawn pass.
+    private var previewFrameMoved = false
 
-                    // When there's no extra space in 16:9 for even the bottom nav bar to be present without
-                    // obscuring the preview or if there's sufficient space for the entire bottom UI to exist
-                    val shouldSnapAboveBottomNav = extraHeight169 < bottomNavigationBarPadding
-                            || extraHeight169 >= (threeButtons.height + tabLayout.height + tabLayout.marginTop)
+    /** Whether the lens row stands where its margin puts it. */
+    private fun lensRowInPlace(): Boolean {
+        val row = binding.lensControls
+        if (row.visibility != View.VISIBLE || row.height <= 0 || previewView.height <= 0) return true
+        val previewPosition = IntArray(2)
+        val rowPosition = IntArray(2)
+        previewView.getLocationInWindow(previewPosition)
+        row.getLocationInWindow(rowPosition)
+        val margin = (row.layoutParams as ViewGroup.MarginLayoutParams).bottomMargin
+        return rowPosition[1] + row.height == previewPosition[1] + previewView.height - margin
+    }
 
-                    tabLayout.layoutParams =
-                        (tabLayout.layoutParams as ViewGroup.MarginLayoutParams).let {
+    /** Puts the lens row and the hint above it at their distance from the arrow. True if one moved. */
+    private fun placeLensControls(): Boolean {
+        if (!this::settingsIcon.isInitialized || !this::threeButtons.isInitialized ||
+            previewView.height <= 0 || threeButtons.height <= 0) return false
+        var moved = false
+        val density = resources.displayMetrics.density
+        val previewPosition=IntArray(2);val settingsPosition=IntArray(2);val controlsPosition=IntArray(2)
+        previewView.getLocationInWindow(previewPosition);threeButtons.getLocationInWindow(controlsPosition)
+        // The arrow is gone until the camera is bound and while it's blocked. A filled preview
+        // reaches behind the capture row, so the row then keeps clear of the arrow's place.
+        val arrowTop = if (settingsIcon.visibility != View.GONE && settingsIcon.height > 0) {
+            settingsIcon.getLocationInWindow(settingsPosition); settingsPosition[1]
+        } else null
+        // Four dp of visual inset inside each circular touch target leaves
+        // a twelve-dp visible gap above the settings arrow.
+        val margin = app.grapheneos.camera.ui.LensPlacement.bottomMargin(previewPosition[1] + previewView.height, arrowTop,
+            controlsPosition[1], ((32 + 48) * density).toInt(), (8 * density).toInt())
+        val params=binding.lensControls.layoutParams as android.view.ViewGroup.MarginLayoutParams
+        if(params.bottomMargin!=margin) {params.bottomMargin=margin;binding.lensControls.layoutParams=params;moved=true}
+        val lensHeight = if (binding.lensControls.visibility == View.VISIBLE)
+            maxOf(binding.lensControls.height, (48 * resources.displayMetrics.density).toInt()) else 0
+        val controls = binding.computationalControls.layoutParams as android.view.ViewGroup.MarginLayoutParams
+        val controlsMargin = margin + lensHeight + (16 * resources.displayMetrics.density).toInt()
+        if (controls.bottomMargin != controlsMargin) {
+            controls.bottomMargin = controlsMargin
+            binding.computationalControls.layoutParams = controls
+            moved = true
+        }
+        return moved
+    }
 
-                            it.setMargins(
-                                it.leftMargin,
-                                it.topMargin,
-                                it.rightMargin,
-                                if (shouldSnapAboveBottomNav) {
-                                    bottomNavigationBarPadding
-                                } else {
-                                    extraHeight169
-                                }
-                            )
+    fun updateLensControls() {
+        if (!this::binding.isInitialized || !this::camConfig.isInitialized) return
+        val choices = camConfig.zoomPresets()
+        binding.lensControls.visibility = if (choices.size > 1 &&
+            (!this::settingsDialog.isInitialized || !settingsDialog.isShowing)) View.VISIBLE else View.GONE
+        placeLensControls()
+        val actual = zoomBar.gestureZoom ?: camConfig.displayZoom
+        val selected = when {
+            actual < 1f -> choices.firstOrNull {it<1f}
+            actual >= 1.99f -> choices.firstOrNull {it==2f} ?: choices.firstOrNull {it==1f}
+            else -> choices.firstOrNull {it==1f}
+        }
+        val formatter = java.text.NumberFormat.getNumberInstance().apply { maximumFractionDigits = 1 }
+        for ((button, ratio) in listOf(binding.lensWide to choices.firstOrNull { it < 1f },
+            binding.lensMain to choices.firstOrNull { it == 1f }, binding.lensTwo to choices.firstOrNull { it == 2f })) {
+            button.visibility = if (ratio == null) View.GONE else View.VISIBLE
+            if (ratio == null) continue
+            button.text = getString(R.string.lens_zoom_label, formatter.format(if(selected == ratio) actual else ratio))
+            button.contentDescription = getString(R.string.select_lens_zoom, formatter.format(ratio))
+            button.isChecked = selected == ratio
+            button.isEnabled = !imageCapturer.isTakingPicture && !camConfig.directBurstActive
+            button.setOnClickListener { zoomBar.holdOpen(); camConfig.selectZoomPreset(ratio) }
+        }
+        // Keep circular targets large enough for enlarged text as well as touch.
+        val visibleButtons = listOf(binding.lensWide, binding.lensMain, binding.lensTwo).filter { it.visibility == View.VISIBLE }
+        val diameter = maxOf((48 * resources.displayMetrics.density).toInt(),
+            visibleButtons.maxOfOrNull { kotlin.math.ceil(it.paint.measureText(it.text.toString()) + 16 * resources.displayMetrics.density).toInt() } ?: 0)
+        visibleButtons.forEach { button ->
+            button.cornerRadius = diameter / 2
+            if (button.layoutParams.width != diameter || button.layoutParams.height != diameter) {
+                button.layoutParams = button.layoutParams.apply { width = diameter; height = diameter }
+            }
+        }
+    }
 
-                            it
-                        }
+    private var portraitSubjectHint = false
+    private var portraitPreview: app.grapheneos.camera.ui.PortraitPreview? = null
+    private var portraitPreviewUnavailable = false
 
-                    return true
-                }
+    fun preparePortraitPreview() {
+        if (Build.VERSION.SDK_INT >= 33) portraitPreview?.close()
+        portraitPreview = null
+        if (Build.VERSION.SDK_INT >= 31) previewView.setRenderEffect(null)
+        if (!camConfig.softwarePortrait || portraitPreviewUnavailable || Build.VERSION.SDK_INT < 33) return
+        try {
+            portraitPreview = app.grapheneos.camera.ui.PortraitPreview(this, previewView, ::disablePortraitPreview)
+            refreshPortraitPreview()
+        } catch (_: Exception) { disablePortraitPreview() }
+    }
 
-            })
+    fun disablePortraitPreview() { runOnUiThread {
+        if (portraitPreviewUnavailable || isDestroyed || isFinishing) return@runOnUiThread
+        portraitPreviewUnavailable = true
+        showMessage(getString(R.string.portrait_preview_unavailable))
+        if (Build.VERSION.SDK_INT >= 33) portraitPreview?.close()
+        portraitPreview = null
+        if (Build.VERSION.SDK_INT >= 31) previewView.setRenderEffect(null)
+    } }
+
+    fun refreshPortraitPreview() {
+        if (!this::camConfig.isInitialized || Build.VERSION.SDK_INT < 33) return
+        portraitPreview?.parameters(camConfig.portraitSubjectX, camConfig.portraitSubjectY,
+            camConfig.portraitBlur)
+    }
+
+    fun updateComputationalMode() {
+        if (imageCapturer.isTakingPicture) return
+        portraitSubjectHint = camConfig.softwarePortrait
+        clearProcessingStatus()
+        refreshCaptureHints()
+        updateLensControls()
+    }
+
+    fun hideCaptureHints() {
+        binding.lensControls.visibility = View.GONE
+        binding.nightSuggestion.visibility = View.GONE
+        if (!imageCapturer.isTakingPicture) binding.processingStatus.visibility = View.GONE
+    }
+
+    fun refreshCaptureHints() {
+        updateLensControls()
+        if (imageCapturer.isTakingPicture) return
+        val visible = portraitSubjectHint && camConfig.softwarePortrait &&
+            (!this::settingsDialog.isInitialized || !settingsDialog.isShowing)
+        if (visible) binding.processingStatus.setText(R.string.portrait_tap_subject)
+        binding.processingStatus.visibility = if (visible) View.VISIBLE else View.GONE
+    }
+
+    fun showProcessingStatus(frame: Int, count: Int) {
+        binding.nightSuggestion.visibility = View.GONE
+        binding.processingStatus.text = if (count > 0 && frame < count)
+            getString(R.string.night_hold_still, frame, count) else getString(R.string.taking_photo)
+        binding.processingStatus.visibility = View.VISIBLE
+        binding.cancelProcessing.visibility = View.VISIBLE
+    }
+
+    fun clearProcessingStatus() {
+        if (!this::binding.isInitialized) return
+        binding.processingStatus.visibility = View.GONE
+        binding.cancelProcessing.visibility = View.GONE
     }
 
     fun finalizeMode(tab: TabLayout.Tab? = null) {
@@ -1213,7 +1434,7 @@ open class MainActivity : AppCompatActivity(),
         // The strip is untouchable during a recording but not while its start sound still plays, and
         // rebinding the camera there starts the queued recording on a dead recorder. The touch may
         // already have dragged the strip, so put it back on the mode the camera is really in.
-        if (videoCapturer.isRecording) {
+        if (videoCapturer.isRecording || imageCapturer.isProcessingCapture || camConfig.directBurstActive) {
             tabLayout.getTabForMode(camConfig.currentMode)?.let {
                 tabLayout.goToTab(it)
             }
@@ -1314,6 +1535,10 @@ open class MainActivity : AppCompatActivity(),
 
     private var isQRDialogShowing = false
 
+    // Not behind a capture review screen or a QR result.
+    private val resumeRebindAllowed get() = !isQRDialogShowing && !(this is VideoCaptureActivity && thirdOption.visibility==View.VISIBLE)
+    internal val previewRebindAllowed get() = !isQRDialogShowing && previewView.isVisible
+
     fun onScanResultSuccess(rawText: String, rawBytes: () -> ByteArray) {
 
         if (isQRDialogShowing) return
@@ -1410,6 +1635,7 @@ open class MainActivity : AppCompatActivity(),
     }
 
     override fun onTouch(v: View, event: MotionEvent): Boolean {
+        if (camConfig.directBurstActive || imageCapturer.isProcessingCapture) return true
         scaleGestureDetector.onTouchEvent(event)
         gestureDetector.onTouchEvent(event)
 
@@ -1431,6 +1657,13 @@ open class MainActivity : AppCompatActivity(),
             val x = event.x
             val y = event.y
 
+            if (camConfig.softwarePortrait) {
+                camConfig.portraitSubjectX = (x / previewView.width).coerceIn(0f, 1f)
+                camConfig.portraitSubjectY = (y / previewView.height).coerceIn(0f, 1f)
+                refreshPortraitPreview()
+                portraitSubjectHint = false
+                binding.processingStatus.visibility = View.GONE
+            }
             val autoFocusPoint = previewView.meteringPointFactory.createPoint(x, y)
             animateFocusRing(x, y)
 
@@ -1455,22 +1688,22 @@ open class MainActivity : AppCompatActivity(),
         return true
     }
 
+    private var pendingPinchZoom = 1f
     override fun onScale(detector: ScaleGestureDetector): Boolean {
         isZooming = true
-        val zoomState = camConfig.zoomState
-        var scale = 1f
-        if (zoomState != null) {
-            scale = zoomState.zoomRatio * detector.scaleFactor
+        camConfig.zoomState?.let {
+            pendingPinchZoom = (pendingPinchZoom * detector.scaleFactor).coerceIn(it.minZoomRatio, it.maxZoomRatio)
+            camConfig.setZoomRatio(pendingPinchZoom, allowLensSwitch = false)
         }
-        camConfig.camera!!.cameraControl.setZoomRatio(scale)
         return true
     }
 
     override fun onScaleBegin(detector: ScaleGestureDetector): Boolean {
+        pendingPinchZoom = camConfig.zoomState?.zoomRatio ?: 1f
         return true
     }
 
-    override fun onScaleEnd(detector: ScaleGestureDetector) {}
+    override fun onScaleEnd(detector: ScaleGestureDetector) { camConfig.setZoomRatio(pendingPinchZoom) }
 
     private fun rotateView(view: View?, angle: Float) {
         if (view != null) {
@@ -1763,6 +1996,7 @@ open class MainActivity : AppCompatActivity(),
         camConfig.preview?.targetRotation = previewView.display?.rotation ?: Surface.ROTATION_0
         camConfig.camera?.cameraInfo?.let {
             previewView.applyPreviewRatio(camConfig.aspectRatio, it)
+            fitPreviewFrame()
         }
 
         rootView.post { sensorNotifier?.notifyListeners() }
@@ -1917,6 +2151,9 @@ open class MainActivity : AppCompatActivity(),
     }
 
     override fun onDestroy() {
+        if(this::camConfig.isInitialized) {camConfig.closePreviewProcessing();camConfig.mPlayer.close()}
+        if (Build.VERSION.SDK_INT >= 33) portraitPreview?.close()
+        portraitPreview = null
         super.onDestroy()
         camConfig.stopAwaitingCameraReturn()
         SensorOrientationChangeNotifier.clearInstance()
@@ -2009,6 +2246,32 @@ open class MainActivity : AppCompatActivity(),
     }
 
     @Volatile var isStarted = false
+    private var observingPhotoQueue = false
+
+    private fun refreshProcessingThumbnail() {
+        val old = camConfig.lastCapturedItem ?: return
+        if (old.processingId == null) return
+        val resolved = app.grapheneos.camera.capturer.PhotoProcessingQueue.resolve(old)
+        if (resolved == null) {
+            // A removed pending item must not uncover photos from outside a lock-screen session.
+            val sessionItems = if (this is SecureMainActivity) capturedItems.toList() else null
+            thumbnailLoaderExecutor.executeIfAlive {
+                val candidates = sessionItems
+                    ?: try { app.grapheneos.camera.CapturedItems.get(this) } catch (_: InterruptedException) { return@executeIfAlive }
+                val latest = candidates.mapNotNull(app.grapheneos.camera.capturer.PhotoProcessingQueue::resolve)
+                    .maxByOrNull { it.dateString }
+                mainExecutor.execute {
+                    if (!isDestroyed && camConfig.lastCapturedItem?.uri == old.uri) {
+                        camConfig.replaceLastCapturedItem(latest)
+                        updateThumbnail()
+                    }
+                }
+            }
+        } else if (old.uri != resolved.uri || old.pendingFailed != resolved.pendingFailed) {
+            camConfig.updateLastCapturedItem(resolved)
+            updateThumbnail()
+        }
+    }
 
     override fun onStart() {
         super.onStart()
@@ -2022,16 +2285,23 @@ open class MainActivity : AppCompatActivity(),
             updateLastFrame()
             videoCapturer.stopRecording()
         }
+        if(this::camConfig.isInitialized)camConfig.closePreviewProcessing()
         super.onStop()
     }
 
     var isThumbnailLoaded = false
+    private var thumbnailGeneration=0
 
     // The capture that the thumbnail shows
     private var thumbnailItem: CapturedItem? = null
 
     fun showThumbnail(item: CapturedItem?, bitmap: Bitmap?) {
-        imagePreview.setImageBitmap(bitmap)
+        // DiamaneOS: with no capture the button shows its empty gallery icon.
+        if (item == null) {
+            imagePreview.setImageResource(R.drawable.gallery_placeholder)
+        } else {
+            imagePreview.setImageBitmap(bitmap)
+        }
         thumbnailItem = if (bitmap != null) item else null
     }
 

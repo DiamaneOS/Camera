@@ -196,7 +196,7 @@ class VideoCapturer(private val mActivity: MainActivity) {
 
         val ctx = mActivity
 
-        if (ctx.settingsDialog.includeAudioToggle.isChecked) {
+        if (camConfig.includeAudio) {
             if (ctx.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PERMISSION_GRANTED) {
                 includeAudio = true
             } else {
@@ -266,9 +266,9 @@ class VideoCapturer(private val mActivity: MainActivity) {
                     pendingRecording.withAudioEnabled()
                 }
 
-                camConfig.mPlayer.playVRStartSound(handler) {
+                val beginRecording = Runnable {
                     if (consumed) {
-                        return@playVRStartSound
+                        return@Runnable
                     }
 
                     consumed = true

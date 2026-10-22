@@ -35,7 +35,16 @@ private fun prepareMediaPlayer(
     }
 }
 
-open class TunePlayer(val context: MainActivity) {
+open class TunePlayer(val context: MainActivity) : AutoCloseable {
+
+    // DiamaneOS: the players are released with the activity that made them (close).
+    @Volatile
+    private var closed = false
+
+    // A player prepared after close is released at once.
+    private fun keep(set: (MediaPlayer) -> Unit) = MediaPlayer.OnPreparedListener { player ->
+        if (closed) player.release() else set(player)
+    }
 
     // Set on the sound thread once loaded. The main thread only hands them back there to play.
     @Volatile
@@ -55,15 +64,15 @@ open class TunePlayer(val context: MainActivity) {
     private var vStopPlayer: MediaPlayer? = null
 
     init {
-        prepareMediaPlayer(context, R.raw.image_shot, { player -> shutterPlayer = player })
+        prepareMediaPlayer(context, R.raw.image_shot, keep { shutterPlayer = it })
 
-        prepareMediaPlayer(context, R.raw.focus_start, { player -> fSPlayer = player })
+        prepareMediaPlayer(context, R.raw.focus_start, keep { fSPlayer = it })
 
-        prepareMediaPlayer(context, R.raw.timer_increment, { player -> tIPlayer = player })
-        prepareMediaPlayer(context, R.raw.timer_final_second, { player -> tCPlayer = player })
+        prepareMediaPlayer(context, R.raw.timer_increment, keep { tIPlayer = it })
+        prepareMediaPlayer(context, R.raw.timer_final_second, keep { tCPlayer = it })
 
-        prepareMediaPlayer(context, R.raw.video_start, { player -> vRecPlayer = player })
-        prepareMediaPlayer(context, R.raw.video_stop, { player -> vStopPlayer = player })
+        prepareMediaPlayer(context, R.raw.video_start, keep { vRecPlayer = it })
+        prepareMediaPlayer(context, R.raw.video_stop, keep { vStopPlayer = it })
     }
 
     private fun shouldNotPlayTune(): Boolean {
@@ -73,6 +82,7 @@ open class TunePlayer(val context: MainActivity) {
     private fun play(player: MediaPlayer?) {
         if (shouldNotPlayTune() || player == null) return
         soundHandler.post {
+            if (closed) return@post
             player.seekTo(0)
             player.start()
         }
@@ -89,6 +99,10 @@ open class TunePlayer(val context: MainActivity) {
             return
         }
         soundHandler.post {
+            if (closed) {
+                handler.post(onPlayed)
+                return@post
+            }
             // An unhandled playback error is also delivered to the completion listener, and a
             // failed sound must still deliver onPlayed once: the recording start is waiting on it.
             var delivered = false
@@ -124,6 +138,20 @@ open class TunePlayer(val context: MainActivity) {
 
     fun playFocusStartSound() {
         play(fSPlayer)
+    }
+
+    override fun close() {
+        if (closed) return
+        closed = true
+        soundHandler.post {
+            listOfNotNull(shutterPlayer, fSPlayer, tIPlayer, tCPlayer, vRecPlayer, vStopPlayer).forEach { it.release() }
+            shutterPlayer = null
+            fSPlayer = null
+            tIPlayer = null
+            tCPlayer = null
+            vRecPlayer = null
+            vStopPlayer = null
+        }
     }
 
     companion object {
