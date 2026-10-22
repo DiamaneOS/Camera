@@ -66,4 +66,10 @@ class CameraBlockRecovery {
 
     /** True when the camera should be rebound now. */
     fun rebindNow(busy: Boolean) = pending && closedByBlock && !busy
+
+    companion object {
+        /** Access is blocked, or the camera reports ERROR_CAMERA_DISABLED while not open. */
+        fun endsRecording(state: State, disabled: Boolean, accessAllowed: Boolean) =
+            !accessAllowed || (disabled && state != State.OPEN)
+    }
 }

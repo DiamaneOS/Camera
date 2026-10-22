@@ -63,4 +63,6 @@
     <string name="photo_resolution_auto">Automatic (recommended)</string>
     <string name="photo_resolution_size">%1$.1f MP · %2$d × %3$d</string>
     <string name="photo_resolution_automatic_mode">Photo size is automatic in this mode.</string>
+    <string name="camera_access_off">Camera access is turned off</string>
+    <string name="recording_stopped_camera_blocked">Recording stopped: camera access turned off</string>
 </resources>

@@ -148,6 +148,11 @@ class VideoCapturer(private val mActivity: MainActivity) {
         if (camConfig.camera == null) return
         val recorder = camConfig.videoCapture?.output ?: return
         if (isRecording) return
+        // No frames would arrive, and the rebind waits for the recording to end.
+        if (!camConfig.cameraAccessAllowed()) {
+            mActivity.showMessage(R.string.camera_access_off)
+            return
+        }
         isRecording = true
 
         val dateString = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
@@ -445,15 +450,18 @@ class VideoCapturer(private val mActivity: MainActivity) {
         recording?.mute(false)
     }
 
-    fun stopRecording() {
+    /** False when there was no recording or queued start left to stop. */
+    fun stopRecording(): Boolean {
         cancelDeferredStart?.let {
             it()
-            return
+            return true
         }
 
-        recording?.stop()
-        recording?.close()
+        val current = recording ?: return false
+        current.stop()
+        current.close()
         recording = null
+        return true
     }
 
     private fun discardUnusedOutput(recordingCtx: RecordingContext) {

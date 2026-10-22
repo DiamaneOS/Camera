@@ -2086,12 +2086,15 @@ class CamConfig(private val mActivity: MainActivity) {
             CameraState.Type.OPENING, CameraState.Type.PENDING_OPEN -> CameraBlockRecovery.State.OPENING
             else -> CameraBlockRecovery.State.CLOSED
         }
-        blockRecovery.onCameraState(type, state.error?.code == CameraState.ERROR_CAMERA_DISABLED, cameraAccessAllowed())
+        val disabled = state.error?.code == CameraState.ERROR_CAMERA_DISABLED
+        val allowed = cameraAccessAllowed()
+        blockRecovery.onCameraState(type, disabled, allowed)
+        if (CameraBlockRecovery.endsRecording(type, disabled, allowed)) stopRecordingOnBlock()
         scheduleBlockRebind()
     }
 
     /** Android's camera block (sensor privacy) restricts the camera app op, so a check sees it. */
-    private fun cameraAccessAllowed(): Boolean {
+    fun cameraAccessAllowed(): Boolean {
         val appOps = mActivity.getSystemService(AppOpsManager::class.java) ?: return true
         return appOps.unsafeCheckOpNoThrow(AppOpsManager.OPSTR_CAMERA, Process.myUid(), mActivity.packageName) !=
             AppOpsManager.MODE_IGNORED
@@ -2099,8 +2102,18 @@ class CamConfig(private val mActivity: MainActivity) {
 
     /** The camera app op may have changed. Main thread only. */
     fun onCameraAccessChanged() {
-        blockRecovery.onAccess(cameraAccessAllowed())
+        val allowed = cameraAccessAllowed()
+        blockRecovery.onAccess(allowed)
+        if (!allowed) stopRecordingOnBlock()
         scheduleBlockRebind()
+    }
+
+    /** The block ends a recording. It stops as with the stop button, so what was recorded is saved. */
+    private fun stopRecordingOnBlock() {
+        val capturer = mActivity.videoCapturer
+        if (!capturer.isRecording || !capturer.stopRecording()) return
+        Log.i(TAG, "Camera access blocked, recording stopped")
+        mActivity.showMessage(R.string.recording_stopped_camera_blocked)
     }
 
     fun resetBlockRecovery() {

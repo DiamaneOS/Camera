@@ -118,6 +118,18 @@ class CameraBlockRecoveryTest {
         r.onAccess(true)
         assertTrue(r.rebindNow(false))
     }
+    @Test fun aBlockEndsARecording() {
+        assertTrue(CameraBlockRecovery.endsRecording(State.OPEN, disabled=false, accessAllowed=false))
+        assertTrue(CameraBlockRecovery.endsRecording(State.CLOSED, disabled=true, accessAllowed=true))
+        assertTrue(CameraBlockRecovery.endsRecording(State.CLOSED, disabled=false, accessAllowed=false))
+        assertTrue(CameraBlockRecovery.endsRecording(State.OPENING, disabled=true, accessAllowed=true))
+    }
+    @Test fun otherStatesKeepARecording() {
+        assertFalse(CameraBlockRecovery.endsRecording(State.OPEN, disabled=false, accessAllowed=true))
+        assertFalse(CameraBlockRecovery.endsRecording(State.OPEN, disabled=true, accessAllowed=true))
+        assertFalse(CameraBlockRecovery.endsRecording(State.CLOSED, disabled=false, accessAllowed=true))
+        assertFalse(CameraBlockRecovery.endsRecording(State.OPENING, disabled=false, accessAllowed=true))
+    }
     @Test fun resetForgetsEverything() {
         val r=blocked()
         r.reset()
