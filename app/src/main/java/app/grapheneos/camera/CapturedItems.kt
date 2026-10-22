@@ -264,6 +264,19 @@ object CapturedItems {
             app.grapheneos.camera.capturer.PhotoProcessingQueue::resolve)
     }
 
+    /** Whether [item] still resolves and is not in the trash, which a query by its own uri still returns. */
+    fun exists(ctx: Context, item: CapturedItem): Boolean {
+        if (item.processingId != null) return app.grapheneos.camera.capturer.PhotoProcessingQueue.resolve(item) != null
+        val trash = item.uri.authority == MediaStore.AUTHORITY && android.os.Build.VERSION.SDK_INT >= 30
+        val column = if (item.uri.authority == MediaStore.AUTHORITY) BaseColumns._ID else DocumentsContract.Document.COLUMN_DOCUMENT_ID
+        val projection = if (trash) arrayOf(column, MediaStore.MediaColumns.IS_TRASHED) else arrayOf(column)
+        return try {
+            ctx.contentResolver.query(item.uri, projection, null, null)?.use {
+                it.moveToFirst() && (!trash || it.getInt(1) == 0)
+            } ?: false
+        } catch (_: Exception) { false }
+    }
+
     private fun collectMediaStoreItems(resolver: ContentResolver, volumeName: String, dest: ArrayList<CapturedItem>) {
         val volumeUri = MediaStore.Files.getContentUri(volumeName)
 
