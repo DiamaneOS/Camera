@@ -150,7 +150,7 @@ Alignment registerFrame(const Guide& reference,const Guide& current,const Noise&
     for(int y=-maximum;y<=maximum;y++)for(int x=-maximum;x<=maximum;x++) {
         if(stop.load())return {};
         for(size_t i=0;i<points.size();i+=coarseStep) {
-            auto& p=points[i];V value=alt.p[size_t(p.y+y)*alt.w+p.x+x];
+            auto& p=points[i];V value=alt.p[size_t(p.y+y)*alt.w+size_t(p.x+x)];
             for(int c=0;c<3;c++)residual[c][i/coarseStep]=value[c]-p.value[c];
         }
         double cost=0;
