@@ -65,5 +65,5 @@
     <string name="photo_resolution_automatic_mode">Photo size is automatic in this mode.</string>
     <string name="camera_access_off">Camera access is turned off</string>
     <string name="recording_stopped_camera_blocked">Recording stopped: camera access turned off</string>
-    <string name="recording_microphone_off">Microphone off, recording continues without sound</string>
+    <string name="recording_microphone_off">Recording without sound: microphone access turned off</string>
 </resources>

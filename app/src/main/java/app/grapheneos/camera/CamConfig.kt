@@ -2140,7 +2140,7 @@ class CamConfig(private val mActivity: MainActivity) {
         val capturer = mActivity.videoCapturer
         val withSound = capturer.isRecording && capturer.includeAudio && !capturer.isMuted
         if (!micOffNote.onAccess(withSound, microphoneAccessAllowed(), cameraAccessAllowed())) return
-        Log.i(TAG, "Microphone access blocked, recording continues without sound")
+        Log.i(TAG, "Recording without sound: microphone access blocked")
         mActivity.showMessage(R.string.recording_microphone_off)
     }
 
