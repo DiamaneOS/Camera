@@ -2031,7 +2031,10 @@ open class MainActivity : AppCompatActivity(),
         super.onStart()
         isStarted = true
         camConfig.resetBlockRecovery()
-        getSystemService(AppOpsManager::class.java)?.startWatchingMode(AppOpsManager.OPSTR_CAMERA, packageName, cameraAccessListener)
+        getSystemService(AppOpsManager::class.java)?.apply {
+            startWatchingMode(AppOpsManager.OPSTR_CAMERA, packageName, cameraAccessListener)
+            startWatchingMode(AppOpsManager.OPSTR_RECORD_AUDIO, packageName, microphoneAccessListener)
+        }
         if (this !is CaptureActivity) {
             for (uri in listOf(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, MediaStore.Video.Media.EXTERNAL_CONTENT_URI)) {
                 contentResolver.registerContentObserver(uri, true, mediaObserver)
@@ -2051,7 +2054,10 @@ open class MainActivity : AppCompatActivity(),
 
     override fun onStop() {
         isStarted = false
-        getSystemService(AppOpsManager::class.java)?.stopWatchingMode(cameraAccessListener)
+        getSystemService(AppOpsManager::class.java)?.apply {
+            stopWatchingMode(cameraAccessListener)
+            stopWatchingMode(microphoneAccessListener)
+        }
         contentResolver.unregisterContentObserver(mediaObserver)
         handler.removeCallbacks(thumbnailCheck)
         handler.removeCallbacks(previewWatchdog)
@@ -2140,6 +2146,11 @@ open class MainActivity : AppCompatActivity(),
     // Android's camera block changes the camera app op. Called on a binder thread.
     private val cameraAccessListener = AppOpsManager.OnOpChangedListener { _, _ ->
         handler.post { if (isStarted) camConfig.onCameraAccessChanged() }
+    }
+
+    // Android's microphone block changes the record audio app op. Called on a binder thread.
+    private val microphoneAccessListener = AppOpsManager.OnOpChangedListener { _, _ ->
+        handler.post { if (isStarted) camConfig.onMicrophoneAccessChanged() }
     }
 
     private val captureInProgress get() = imageCapturer.isTakingPicture || videoCapturer.isRecording

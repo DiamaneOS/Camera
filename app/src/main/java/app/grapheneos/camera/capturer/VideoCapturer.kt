@@ -357,6 +357,9 @@ class VideoCapturer(private val mActivity: MainActivity) {
         mActivity.settingsDialog.videoFrameRateSpinner.isEnabled = false
         mActivity.settingsDialog.enableEISToggle.isEnabled = false
 
+        // The microphone may be blocked already, then the sound is silent from the start.
+        camConfig.onMicrophoneAccessChanged()
+
         // The user may have paused before the recording actually started.
         if (isPaused) {
             mActivity.setFlipCameraIcon(R.drawable.play, R.string.resume_recording)
@@ -431,6 +434,7 @@ class VideoCapturer(private val mActivity: MainActivity) {
         mActivity.muteToggle.visibility = View.GONE
 
         isRecording = false
+        camConfig.onMicrophoneAccessChanged()
         mActivity.settingsDialog.reloadFrameRates()
 
         mActivity.forceUpdateOrientationSensor()
@@ -448,6 +452,7 @@ class VideoCapturer(private val mActivity: MainActivity) {
         check(camConfig.includeAudio)
         isMuted = false
         recording?.mute(false)
+        camConfig.onMicrophoneAccessChanged()
     }
 
     /** False when there was no recording or queued start left to stop. */

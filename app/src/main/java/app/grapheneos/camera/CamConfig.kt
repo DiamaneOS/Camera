@@ -9,6 +9,7 @@ import android.os.SystemClock
 import androidx.camera.camera2.interop.Camera2Interop
 import app.grapheneos.camera.capturer.CameraBlockRecovery
 import app.grapheneos.camera.capturer.CaptureResultMonitor
+import app.grapheneos.camera.capturer.MicOffNote
 import app.grapheneos.camera.capturer.NightSceneDetector
 import android.hardware.camera2.CameraCharacteristics
 import android.net.Uri
@@ -2119,6 +2120,28 @@ class CamConfig(private val mActivity: MainActivity) {
     fun resetBlockRecovery() {
         blockRecovery.reset()
         blockRecovery.onAccess(cameraAccessAllowed())
+        micOffNote.reset()
+    }
+
+    private val micOffNote = MicOffNote()
+
+    /** Android's microphone block (sensor privacy) restricts the record audio app op. */
+    private fun microphoneAccessAllowed(): Boolean {
+        val appOps = mActivity.getSystemService(AppOpsManager::class.java) ?: return true
+        return appOps.unsafeCheckOpNoThrow(AppOpsManager.OPSTR_RECORD_AUDIO, Process.myUid(), mActivity.packageName) !=
+            AppOpsManager.MODE_IGNORED
+    }
+
+    /**
+     * The microphone app op may have changed, or a recording started, ended or was unmuted.
+     * A recording goes on without sound, so a short note says why. Main thread only.
+     */
+    fun onMicrophoneAccessChanged() {
+        val capturer = mActivity.videoCapturer
+        val withSound = capturer.isRecording && capturer.includeAudio && !capturer.isMuted
+        if (!micOffNote.onAccess(withSound, microphoneAccessAllowed(), cameraAccessAllowed())) return
+        Log.i(TAG, "Microphone access blocked, recording continues without sound")
+        mActivity.showMessage(R.string.recording_microphone_off)
     }
 
     // Posted, as a LiveData observer can run inside startCamera().
