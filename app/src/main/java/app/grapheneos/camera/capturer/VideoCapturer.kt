@@ -433,7 +433,9 @@ class VideoCapturer(private val mActivity: MainActivity) {
         isRecording = false
         mActivity.settingsDialog.reloadFrameRates()
 
-        mActivity.forceUpdateOrientationSensor()
+        // The controls already follow the phone. A forced update would reset them to the display
+        // rotation, turning landscape controls to portrait and back.
+        mActivity.sensorNotifier?.notifyListeners()
     }
 
     fun muteRecording() {
