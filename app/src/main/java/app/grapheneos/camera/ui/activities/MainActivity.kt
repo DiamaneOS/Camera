@@ -1497,10 +1497,10 @@ open class MainActivity : AppCompatActivity(),
         }
 
         camConfig.imageCapture?.targetRotation = tr
+        // CameraX applies a new rotation from the next recording on. The current one keeps its own,
+        // so the controls below can turn with the phone while recording.
         camConfig.videoCapture?.targetRotation = tr
         camConfig.iAnalyzer?.targetRotation = tr
-
-        if (videoCapturer.isRecording) return
 
         var iconRotation = (360f - ((orientation - getRotation() + 360) % 360)) % 360
 
