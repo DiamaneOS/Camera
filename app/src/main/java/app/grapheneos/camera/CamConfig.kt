@@ -61,6 +61,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.LiveData
 import androidx.lifecycle.Observer
 import app.grapheneos.camera.analyzer.QRAnalyzer
+import app.grapheneos.camera.capturer.ForcedFrameRate
 import app.grapheneos.camera.capturer.PhotoCapturePolicy
 import app.grapheneos.camera.capturer.RawLens
 import app.grapheneos.camera.capturer.RawLensCatalog
@@ -766,9 +767,15 @@ class CamConfig(private val mActivity: MainActivity) {
         if (mActivity.videoCapturer.isRecording) return
         val key = videoFrameRatePreferenceKey ?: return
         if (rate != null && rate !in availableVideoFrameRates) return
-        if (rate == selectedVideoFrameRate) return
+        val forced = rate != null && rate == forcedVideoRate(lensFacing)
+        if (rate == selectedVideoFrameRate && (forced || !commonPref.contains(forcedRateKey(lensFacing)))) return
         commonPref.edit {
-            if (rate == null) remove(key) else putString(key, rate.preferenceValue())
+            if (forced) {
+                putString(forcedRateKey(lensFacing), rate.preferenceValue())
+            } else {
+                remove(forcedRateKey(lensFacing))
+                if (rate == null) remove(key) else putString(key, rate.preferenceValue())
+            }
         }
         startCamera(true)
     }
@@ -1807,6 +1814,37 @@ class CamConfig(private val mActivity: MainActivity) {
         return slowMotionRateCache.putIfAbsent(key,rates) ?: rates
     }
 
+    private fun forcedRateKey(facing: Int) =
+        "video_frame_rate_forced/${if (facing == CameraSelector.LENS_FACING_FRONT) "FRONT" else "BACK"}"
+
+    // 60 fps for the facing's default camera at the quality it would record at. The rear
+    // zoom-out camera is left out because 60 fps is only known to work on the main lens.
+    private fun forcedVideoRate(facing: Int): VideoFrameRate? {
+        if (currentMode != CameraMode.VIDEO) return null
+        return try {
+            val info = cameraProvider?.getCameraInfo(
+                CameraSelector.Builder().requireLensFacing(facing).build()) ?: return null
+            val supported = Recorder.getVideoCapabilities(info).getSupportedQualities(DynamicRange.SDR)
+            val quality = when {
+                videoQuality == Quality.HIGHEST -> supported.firstOrNull()
+                videoQuality in supported -> videoQuality
+                else -> SettingValues.Default.VIDEO_QUALITY
+            } ?: return null
+            val advertised = Camera2CameraInfo.from(info)
+                .getCameraCharacteristic(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES)
+                ?.maxOfOrNull { it.upper } ?: 0
+            ForcedFrameRate.offered(advertised, slowMotionFrameRates(info, quality))
+        } catch (exception: IllegalArgumentException) {
+            Log.w(TAG, "Forced frame rate cannot be queried", exception)
+            null
+        }
+    }
+
+    private fun savedForcedRate(facing: Int): VideoFrameRate? =
+        forcedVideoRate(facing)?.takeIf {
+            commonPref.getString(forcedRateKey(facing), null) == it.preferenceValue()
+        }
+
     // The saved rate when it is a slow-motion rate this camera and quality still offer.
     private fun savedSlowMotionRate(): VideoFrameRate? {
         if(currentMode!=CameraMode.SLOW_MOTION) return null
@@ -1845,6 +1883,7 @@ class CamConfig(private val mActivity: MainActivity) {
         useCases: List<UseCase>,
         preferredFeatures: List<GroupableFeature>,
         qualityFeature: GroupableFeature?,
+        forcedRate: VideoFrameRate?,
     ): SessionConfig {
         val cameraInfo = cameraProvider!!.getCameraInfo(cameraSelector)
         val (key, quality) = videoFrameRateKey(cameraInfo)
@@ -1885,10 +1924,12 @@ class CamConfig(private val mActivity: MainActivity) {
 
         val regular = VideoFrameRate.supportedOptions(profiles.map { it.frameRates })
         slowMotionVideoFrameRates = quality?.let { slowMotionFrameRates(cameraInfo, it) } ?: emptyList()
-        availableVideoFrameRates = regular
+        availableVideoFrameRates = VideoFrameRate.supportedOptions(
+            listOf(regular.toSet(), listOfNotNull(forcedVideoRate(lensFacing)).toSet()))
         val stored = commonPref.getString(key, null)
         val requested = VideoFrameRate.fromPreference(stored)
-        selectedVideoFrameRate = requested?.takeIf { it in regular }
+        selectedVideoFrameRate = forcedRate ?: requested?.takeIf { it in regular }
+        if (forcedRate != null) return SessionConfig(useCases = useCases)
         if (stored != null && selectedVideoFrameRate == null) {
             val unavailable = key to stored
             if (lastUnavailableFrameRate != unavailable) {
@@ -2029,7 +2070,8 @@ class CamConfig(private val mActivity: MainActivity) {
         val builder = CameraSelector.Builder().requireLensFacing(lensFacing)
 
         if (lensFacing == CameraSelector.LENS_FACING_BACK &&
-            currentMode.extensionMode == ExtensionMode.NONE && currentMode != CameraMode.SLOW_MOTION
+            currentMode.extensionMode == ExtensionMode.NONE && currentMode != CameraMode.SLOW_MOTION &&
+            savedForcedRate(lensFacing) == null
         ) {
             builder.addCameraFilter(ZOOM_OUT_CAMERA_FILTER)
         }
@@ -2312,7 +2354,12 @@ class CamConfig(private val mActivity: MainActivity) {
             switchMode(CameraMode.VIDEO)
             return
         }
-        val usesFeatureGroup = isVideoMode && slowMotion == null && enableEIS && canApplyVideoStabilization()
+        // 60 fps the camera records in an ordinary session without advertising it: no snapshots and
+        // no stabilization feature group, on the facing's default camera.
+        val forcedRate = if (isVideoMode && appliedExtension == null && slowMotion == null)
+            savedForcedRate(lensFacing) else null
+        val usesFeatureGroup = isVideoMode && slowMotion == null && forcedRate == null &&
+            enableEIS && canApplyVideoStabilization()
         val videoQualityFeature: GroupableFeature? = when {
             usesFeatureGroup -> videoQualityAsGroupableFeature()
             else -> null
@@ -2383,12 +2430,20 @@ class CamConfig(private val mActivity: MainActivity) {
                     videoCaptureBuilder.setMirrorMode(MirrorMode.MIRROR_MODE_ON_FRONT_ONLY)
                 }
 
+                // CameraX clamps its own frame rate request to the advertised 30 fps, so the
+                // range goes in as a capture request option, which also becomes a session parameter.
+                forcedRate?.let {
+                    Camera2Interop.Extender(videoCaptureBuilder).setCaptureRequestOption(
+                        android.hardware.camera2.CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE,
+                        Range(it.lower, it.upper))
+                }
+
                 videoCapture = videoCaptureBuilder.build()
 
                 useCasesList.add(videoCapture!!)
             }
 
-            if (slowMotion != null) {
+            if (slowMotion != null || forcedRate != null) {
                 imageCapture = null
             } else if (!mActivity.requiresVideoModeOnly) {
                 imageCapture = builder.let {
@@ -2601,7 +2656,7 @@ class CamConfig(private val mActivity: MainActivity) {
         if(BuildConfig.DEBUG)app.grapheneos.camera.capturer.PortraitPreviewDiagnostics.spatialLumaApplied=(spatialLuma*100).toInt()
         val retention=mActivity.resources.getInteger(R.integer.config_camera_preview_temporal_retention)
         if(BuildConfig.DEBUG)Log.i("TemporalPreview","setup retention="+retention+" wide="+physicalWideBound+" unavailable="+temporalPreviewUnavailable+" mode="+currentMode.name)
-        if(retention in 1..80 && !temporalPreviewUnavailable && appliedExtension==null && slowMotion==null &&
+        if(retention in 1..80 && !temporalPreviewUnavailable && appliedExtension==null && slowMotion==null && forcedRate==null &&
             // The filter does not depend on the still format, but CameraX refuses a preview
             // effect beside a RAW ImageCapture. A split JPEG + RAW keeps it outside its RAW phase.
             !cameraXRawBurst && (activePhotoOutputFormat==PhotoOutputFormat.JPEG || (splitsRawJpeg && !splitRawPhase)) &&
@@ -2617,7 +2672,7 @@ class CamConfig(private val mActivity: MainActivity) {
         try {
             val baseSession = when {
                 slowMotion != null -> slowMotionSessionConfig(slowMotion)
-                isVideoMode -> videoSessionConfig(useCasesList, preferredFeatures, videoQualityFeature)
+                isVideoMode -> videoSessionConfig(useCasesList, preferredFeatures, videoQualityFeature, forcedRate)
                 else -> photoSessionConfig(useCasesList,preferredFeatures,
                     appliedExtension==null && currentMode!=CameraMode.NIGHT && !isQRMode)
             }
