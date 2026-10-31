@@ -50,6 +50,7 @@ import androidx.camera.extensions.ExtensionMode
 import androidx.camera.extensions.ExtensionsManager
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.core.DynamicRange
+import androidx.camera.video.ForcedFrameRateRecorder
 import androidx.camera.video.GroupableFeatures
 import androidx.camera.video.HighSpeedVideoSessionConfig
 import androidx.camera.video.Quality
@@ -2405,6 +2406,10 @@ class CamConfig(private val mActivity: MainActivity) {
                 // is what every release up to 1.5 used, keeps up. Both live in an internal
                 // package, so this has to be re-checked on every camera-video upgrade.
                 recorderBuilder.setMuxerFactory { MediaMuxerImpl() }
+
+                // CameraX gives the encoder 30 fps for a forced 60 fps recording, so the encoder picks
+                // H.264 level 4.1, which only allows 1080p30. Ask for the level the real rate needs.
+                if (forcedRate != null) ForcedFrameRateRecorder.useLevelForForcedRate(recorderBuilder)
 
                 if (slowMotion != null) {
                     val quality = videoFrameRateKey(cameraProvider!!.getCameraInfo(cameraSelector)).second
