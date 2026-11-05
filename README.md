@@ -1,5 +1,5 @@
-DiamaneOS fork of [GrapheneOS Camera](https://github.com/GrapheneOS/Camera). Its changes are in the
-[release notes](https://github.com/DiamaneOS/Camera/releases).
+DiamaneOS fork of [GrapheneOS Camera](https://github.com/GrapheneOS/Camera). The
+[release notes](https://github.com/DiamaneOS/Camera/releases) list each release's changes, and the commit history has the earlier ones.
 
 Upstream's description follows.
 
