@@ -154,6 +154,7 @@ open class MainActivity : AppCompatActivity(),
     lateinit var azToggle: QRToggle
 
     lateinit var imageCapturer: ImageCapturer
+    val isImageCapturerReady get() = this::imageCapturer.isInitialized
     lateinit var videoCapturer: VideoCapturer
 
     lateinit var flipCameraCircle: View
@@ -867,6 +868,8 @@ open class MainActivity : AppCompatActivity(),
                 } else {
                     setCaptureButtonIcon(R.drawable.torch_off_button, R.string.turn_torch_on)
                 }
+            } else if (camConfig.captureBlocked() && !cdTimer.isRunning) {
+                showMessage(R.string.camera_access_off)
             } else {
                 if (timerDuration == 0) {
                     imageCapturer.takePicture()
@@ -1083,6 +1086,13 @@ open class MainActivity : AppCompatActivity(),
         binding.nightSuggestion.visibility = if (suggested && camConfig.currentMode == CameraMode.CAMERA &&
             !camConfig.isVideoMode && !imageCapturer.isTakingPicture &&
             (!this::settingsDialog.isInitialized || !settingsDialog.isShowing)) View.VISIBLE else View.GONE
+    }
+
+    // While the camera is off the shutter is dimmed and a press only says why, in every mode.
+    fun updateCaptureAvailability(blocked: Boolean) {
+        if (!this::captureButton.isInitialized) return
+        captureButton.alpha = if (blocked) 0.4f else 1f
+        ViewCompat.setStateDescription(captureButton, if (blocked) getString(R.string.camera_access_off) else null)
     }
 
     fun updateLensControls() {

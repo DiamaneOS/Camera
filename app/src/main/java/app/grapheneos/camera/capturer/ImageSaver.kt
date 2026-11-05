@@ -74,13 +74,18 @@ class ImageSaver(
     val contentResolver = appContext.contentResolver
     val mainThreadExecutor = appContext.mainExecutor
 
-    private var isCancelled = false
+    @Volatile private var isCancelled = false
 
     fun cancelCaptureRequest() {
         isCancelled = true
     }
 
     override fun onCaptureSuccess(image: ImageProxy) {
+        // DiamaneOS: a cancelled request that CameraX still completes is dropped, not saved.
+        if (isCancelled) {
+            image.close()
+            return
+        }
         mainThreadExecutor.execute(imageCapturer::onCaptureSuccess)
 
         try {

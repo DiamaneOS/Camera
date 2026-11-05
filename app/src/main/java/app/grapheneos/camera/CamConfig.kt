@@ -2129,6 +2129,8 @@ class CamConfig(private val mActivity: MainActivity) {
     private var previewRecoveryGeneration=0L
 
     private val blockRecovery = CameraBlockRecovery()
+    private var cameraStateType = CameraBlockRecovery.State.OPENING
+    private var cameraStateError = false
     private var cameraStateSource: LiveData<CameraState>? = null
     private val cameraStateObserver = Observer<CameraState> { state ->
         val type = when (state.type) {
@@ -2138,9 +2140,29 @@ class CamConfig(private val mActivity: MainActivity) {
         }
         val disabled = state.error?.code == CameraState.ERROR_CAMERA_DISABLED
         val allowed = cameraAccessAllowed()
+        cameraStateType = type
+        cameraStateError = state.error != null
         blockRecovery.onCameraState(type, disabled, allowed)
         if (CameraBlockRecovery.endsRecording(type, disabled, allowed)) stopRecordingOnBlock()
+        onCaptureAvailability()
         scheduleBlockRebind()
+    }
+
+    /** No photo or recording can start now, see [CameraBlockRecovery.blocksCapture]. */
+    fun captureBlocked() = CameraBlockRecovery.blocksCapture(cameraStateType, cameraStateError, cameraAccessAllowed())
+
+    // A photo asked for before the block must never be taken when the camera comes back.
+    private fun onCaptureAvailability() {
+        val blocked = captureBlocked()
+        mActivity.updateCaptureAvailability(blocked)
+        if (!mActivity.isImageCapturerReady) return
+        val capturer = mActivity.imageCapturer
+        if (!CameraBlockRecovery.cancelsCapture(capturer.isAcquiring, blocked)) return
+        capturer.cancelAcquiringCapture()
+        Log.i(TAG, "Camera access blocked, photo cancelled")
+        mActivity.showMessage(R.string.photo_cancelled_camera_off)
+        // The request still waits in CameraX. A new binding drops it.
+        mActivity.previewView.post { startCamera(forced = true) }
     }
 
     /** Android's camera block (sensor privacy) restricts the camera app op, so a check sees it. */
@@ -2155,6 +2177,7 @@ class CamConfig(private val mActivity: MainActivity) {
         val allowed = cameraAccessAllowed()
         blockRecovery.onAccess(allowed)
         if (!allowed) stopRecordingOnBlock()
+        onCaptureAvailability()
         scheduleBlockRebind()
     }
 

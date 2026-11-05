@@ -136,4 +136,23 @@ class CameraBlockRecoveryTest {
         r.onAccess(true)
         assertFalse(r.rebindNow(false))
     }
+
+    @Test fun blockedAccessBlocksCapture() {
+        for (state in State.values()) assertTrue(CameraBlockRecovery.blocksCapture(state, hasError=false, accessAllowed=false))
+    }
+    @Test fun aClosedCameraWithAnErrorBlocksCapture() {
+        assertTrue(CameraBlockRecovery.blocksCapture(State.CLOSED, hasError=true, accessAllowed=true))
+        assertTrue(CameraBlockRecovery.blocksCapture(State.OPENING, hasError=true, accessAllowed=true))
+    }
+    @Test fun anOpenOrOpeningCameraTakesPhotos() {
+        assertFalse(CameraBlockRecovery.blocksCapture(State.OPEN, hasError=false, accessAllowed=true))
+        assertFalse(CameraBlockRecovery.blocksCapture(State.OPENING, hasError=false, accessAllowed=true))
+        // An error the open camera recovered from leaves it usable.
+        assertFalse(CameraBlockRecovery.blocksCapture(State.OPEN, hasError=true, accessAllowed=true))
+    }
+    @Test fun onlyAnAcquiringPhotoIsCancelledByABlock() {
+        assertTrue(CameraBlockRecovery.cancelsCapture(acquiring=true, blocked=true))
+        assertFalse(CameraBlockRecovery.cancelsCapture(acquiring=false, blocked=true))
+        assertFalse(CameraBlockRecovery.cancelsCapture(acquiring=true, blocked=false))
+    }
 }

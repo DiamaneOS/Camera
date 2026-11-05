@@ -40,6 +40,9 @@ class ImageCapturer(val mActivity: MainActivity) {
     val isTakingPicture: Boolean
         get() = currentImageSaver != null || rawFileCapture != null || processedCapture != null
 
+    /** A photo whose frames aren't in yet, so a block can still cancel it. */
+    val isAcquiring: Boolean get() = isTakingPicture && processedCapture?.isProcessing != true
+
     /** Captures the UI must not interrupt: processed photos and split JPEG + RAW pairs. */
     val isProcessingCapture: Boolean get() = processedCapture != null || rawFileCapture?.split == true
 
@@ -96,6 +99,11 @@ class ImageCapturer(val mActivity: MainActivity) {
 
     @SuppressLint("RestrictedApi")
     fun takePicture() {
+        // A request now would wait in CameraX and be taken when access returns.
+        if (camConfig.captureBlocked()) {
+            mActivity.showMessage(R.string.camera_access_off)
+            return
+        }
         if (camConfig.camera == null) {
             return
         }

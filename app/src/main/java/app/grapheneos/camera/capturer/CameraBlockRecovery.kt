@@ -71,5 +71,16 @@ class CameraBlockRecovery {
         /** Access is blocked, or the camera reports ERROR_CAMERA_DISABLED while not open. */
         fun endsRecording(state: State, disabled: Boolean, accessAllowed: Boolean) =
             !accessAllowed || (disabled && state != State.OPEN)
+
+        /**
+         * No photo or recording can start: access is blocked, or the camera isn't open and reports an
+         * error, such as ERROR_CAMERA_DISABLED under the block. CameraX would hold a photo request and
+         * take it when the camera comes back, so it's refused instead.
+         */
+        fun blocksCapture(state: State, hasError: Boolean, accessAllowed: Boolean) =
+            !accessAllowed || (hasError && state != State.OPEN)
+
+        /** At the start of a block, a photo still acquiring is cancelled. One whose frames are in finishes. */
+        fun cancelsCapture(acquiring: Boolean, blocked: Boolean) = acquiring && blocked
     }
 }

@@ -149,7 +149,7 @@ class VideoCapturer(private val mActivity: MainActivity) {
         val recorder = camConfig.videoCapture?.output ?: return
         if (isRecording) return
         // No frames would arrive, and the rebind waits for the recording to end.
-        if (!camConfig.cameraAccessAllowed()) {
+        if (camConfig.captureBlocked()) {
             mActivity.showMessage(R.string.camera_access_off)
             return
         }
