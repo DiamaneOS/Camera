@@ -898,6 +898,7 @@ open class MainActivity : AppCompatActivity(),
         settingsIcon = binding.settingsOption
         previewView.addOnLayoutChangeListener { _,_,_,_,_,_,_,_,_ -> updateLensControls() }
         settingsIcon.addOnLayoutChangeListener { _,_,_,_,_,_,_,_,_ -> updateLensControls() }
+        threeButtons.addOnLayoutChangeListener { _,_,_,_,_,_,_,_,_ -> updateLensControls() }
         binding.lensControls.addOnLayoutChangeListener { _,_,_,_,_,_,_,_,_ -> updateLensControls() }
         settingsIcon.setOnClickListener {
             if (!camConfig.isQRMode && !camConfig.directBurstActive && !imageCapturer.isProcessingCapture)
@@ -1089,13 +1090,19 @@ open class MainActivity : AppCompatActivity(),
         val choices = camConfig.zoomPresets()
         binding.lensControls.visibility = if (choices.size > 1 &&
             (!this::settingsDialog.isInitialized || !settingsDialog.isShowing)) View.VISIBLE else View.GONE
-        if(this::settingsIcon.isInitialized && previewView.height>0 && settingsIcon.height>0) {
-            val previewPosition=IntArray(2);val settingsPosition=IntArray(2)
-            previewView.getLocationInWindow(previewPosition);settingsIcon.getLocationInWindow(settingsPosition)
-            val overlap=(previewPosition[1]+previewView.height-settingsPosition[1]).coerceAtLeast(0)
+        if(this::settingsIcon.isInitialized && this::threeButtons.isInitialized && previewView.height>0 && threeButtons.height>0) {
+            val density = resources.displayMetrics.density
+            val previewPosition=IntArray(2);val settingsPosition=IntArray(2);val controlsPosition=IntArray(2)
+            previewView.getLocationInWindow(previewPosition);threeButtons.getLocationInWindow(controlsPosition)
+            // The arrow is gone until the camera is bound and while it's blocked. A filled preview
+            // reaches behind the capture row, so the row then keeps clear of the arrow's place.
+            val arrowTop = if (settingsIcon.visibility != View.GONE && settingsIcon.height > 0) {
+                settingsIcon.getLocationInWindow(settingsPosition); settingsPosition[1]
+            } else null
             // Four dp of visual inset inside each circular touch target leaves
             // a twelve-dp visible gap above the settings arrow.
-            val margin=overlap+(8*resources.displayMetrics.density).toInt()
+            val margin = app.grapheneos.camera.ui.LensPlacement.bottomMargin(previewPosition[1] + previewView.height, arrowTop,
+                controlsPosition[1], ((32 + 48) * density).toInt(), (8 * density).toInt())
             val params=binding.lensControls.layoutParams as android.view.ViewGroup.MarginLayoutParams
             if(params.bottomMargin!=margin) {params.bottomMargin=margin;binding.lensControls.layoutParams=params}
             val lensHeight = if (binding.lensControls.visibility == View.VISIBLE)
