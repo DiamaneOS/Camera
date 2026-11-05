@@ -8,7 +8,12 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.graphics.Bitmap
 import android.os.Build
+import android.os.Handler
+import android.os.HandlerThread
 import android.util.Log
+import android.view.PixelCopy
+import android.view.Surface
+import android.view.SurfaceView
 import android.view.View
 import android.view.animation.AlphaAnimation
 import android.view.animation.Animation
@@ -25,6 +30,7 @@ import app.grapheneos.camera.ui.activities.SecureMainActivity
 import app.grapheneos.camera.ui.showIgnoringShortEdgeMode
 import app.grapheneos.camera.util.printStackTraceToString
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
+import java.io.ByteArrayOutputStream
 
 private const val imageFileFormat = ".jpg"
 
@@ -94,7 +100,9 @@ class ImageCapturer(val mActivity: MainActivity) {
             return
         }
 
-        if (!camConfig.canTakePicture) {
+        val route = PreviewSnapshot.route(camConfig.canTakePicture, mActivity.videoCapturer.isRecording,
+            camConfig.usesForcedFrameRate)
+        if (route == PreviewSnapshot.Route.UNAVAILABLE) {
             mActivity.showMessage(R.string.unsupported_taking_picture_while_recording)
             return
         }
@@ -120,6 +128,11 @@ class ImageCapturer(val mActivity: MainActivity) {
         }
 
         val preview = mActivity.imagePreview
+
+        if (route == PreviewSnapshot.Route.PREVIEW_COPY) {
+            copyPreviewFrame(imageMetadata, preview.width, preview.height)
+            return
+        }
 
         val imageCapture = camConfig.imageCapture!!
 
@@ -175,6 +188,74 @@ class ImageCapturer(val mActivity: MainActivity) {
 
         imageCapture.takePicture(ImageSaver.imageCaptureCallbackExecutor, imageSaver)
         fadeCaptureButton()
+    }
+
+    // The frame comes from the preview buffer itself, not from the window or the view: the window
+    // would add the controls, and the view is cropped and scaled to the screen. PixelCopy reads the
+    // last buffer the camera queued on the render thread, and the encoding runs on its own thread.
+    private fun copyPreviewFrame(imageMetadata: ImageCapture.Metadata, thumbnailWidth: Int, thumbnailHeight: Int) {
+        val previewView = mActivity.previewView
+        val surface = (0 until previewView.childCount).map { previewView.getChildAt(it) }
+            .filterIsInstance<SurfaceView>().firstOrNull()?.holder?.surface?.takeIf { it.isValid }
+        val buffer = camConfig.preview?.resolutionInfo?.resolution
+        val sensorOrientation = camConfig.camera?.cameraInfo?.sensorRotationDegrees
+        if (surface == null || buffer == null || sensorOrientation == null) {
+            onCaptureError(ImageCaptureException(ImageCapture.ERROR_CAPTURE_FAILED, "No preview frame to copy", null))
+            return
+        }
+        if (!previewCopies.tryStart()) return
+
+        imageMetadata.isReversedHorizontal = PreviewSnapshot.mirror(
+            camConfig.lensFacing == CameraSelector.LENS_FACING_FRONT, camConfig.saveImageAsPreviewed)
+        // The capture use cases follow the phone, also while recording.
+        val rotation = PreviewSnapshot.rotationDegrees(camConfig.videoCapture?.targetRotation ?: Surface.ROTATION_0)
+        val quality = camConfig.photoQuality
+        val imageSaver = ImageSaver(
+            this,
+            mActivity.applicationContext,
+            quality,
+            camConfig.storageLocation,
+            imageFileFormat,
+            imageMetadata,
+            camConfig.removeExifAfterCapture,
+            targetThumbnailWidth = thumbnailWidth,
+            targetThumbnailHeight = thumbnailHeight,
+        )
+        currentImageSaver = imageSaver
+        fadeCaptureButton()
+
+        val (width, height) = PreviewSnapshot.copySize(buffer.width, buffer.height, sensorOrientation)
+        val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        fun fail(reason: String, cause: Throwable?) {
+            bitmap.recycle()
+            previewCopies.finish()
+            imageSaver.onError(ImageCaptureException(ImageCapture.ERROR_CAPTURE_FAILED, reason, cause))
+        }
+        try {
+            PixelCopy.request(surface, bitmap, { result ->
+                if (result != PixelCopy.SUCCESS) {
+                    fail("Preview frame copy failed: $result", null)
+                    return@request
+                }
+                val jpeg = ByteArrayOutputStream(2 * 1024 * 1024)
+                val encoded = try {
+                    bitmap.compress(Bitmap.CompressFormat.JPEG, quality, jpeg)
+                } catch (exception: RuntimeException) {
+                    fail("Preview frame encoding failed", exception)
+                    return@request
+                }
+                if (!encoded) {
+                    fail("Preview frame encoding failed", null)
+                    return@request
+                }
+                bitmap.recycle()
+                previewCopies.finish()
+                imageSaver.saveEncodedJpeg(jpeg.toByteArray(), rotation)
+            }, previewCopyHandler)
+        } catch (exception: IllegalArgumentException) {
+            // The preview surface went away between the check and the request.
+            fail("Preview frame copy failed", exception)
+        }
     }
 
     fun cancelPendingCaptureRequest() {
@@ -339,5 +420,11 @@ class ImageCapturer(val mActivity: MainActivity) {
 
     companion object {
         private const val TAG = "ImageCapturer"
+
+        private val previewCopies = PreviewSnapshot.Gate()
+        // Copies and encodes preview frames, away from the camera and main threads.
+        private val previewCopyHandler by lazy {
+            Handler(HandlerThread("PreviewCopy").apply { start() }.looper)
+        }
     }
 }

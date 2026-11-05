@@ -673,6 +673,10 @@ class CamConfig(private val mActivity: MainActivity) {
             return imageCapture != null
         }
 
+    /** The bound video session forces 60 fps and has no photo stream. */
+    var usesForcedFrameRate = false
+        private set
+
     var isQRMode = false
         private set
 
@@ -2382,6 +2386,7 @@ class CamConfig(private val mActivity: MainActivity) {
         // no stabilization feature group, on the facing's default camera.
         val forcedRate = if (isVideoMode && appliedExtension == null && slowMotion == null)
             savedForcedRate(lensFacing) else null
+        usesForcedFrameRate = forcedRate != null
         val usesFeatureGroup = isVideoMode && slowMotion == null && forcedRate == null &&
             enableEIS && canApplyVideoStabilization()
         val videoQualityFeature: GroupableFeature? = when {
