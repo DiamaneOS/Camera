@@ -13,6 +13,19 @@ internal object ForcedFrameRate {
     fun offered(maxAdvertised: Int, highSpeed: List<VideoFrameRate>): VideoFrameRate? =
         RATE.takeIf { maxAdvertised < RATE.upper && highSpeed.isNotEmpty() }
 
+    /** What a frame rate choice does to the stored forced rate. */
+    enum class Stored { SET, CLEAR, KEEP }
+
+    /**
+     * The forced rate belongs to video mode. A forced choice stores it, another video mode choice
+     * clears it, and a choice in another mode leaves it as it is.
+     */
+    fun storedAfterChoice(videoMode: Boolean, forced: Boolean): Stored = when {
+        forced -> Stored.SET
+        videoMode -> Stored.CLEAR
+        else -> Stored.KEEP
+    }
+
     // H.264 Annex A, table A-1: the level, its macroblocks per second, its frame size in macroblocks and
     // its bit rate in kbit/s for Baseline, Main and Extended. High allows 1.25 times that.
     private class AvcLevel(val id: Int, val maxMbps: Int, val maxFs: Int, val maxKbps: Int)

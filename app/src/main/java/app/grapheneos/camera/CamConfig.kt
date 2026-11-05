@@ -774,12 +774,14 @@ class CamConfig(private val mActivity: MainActivity) {
         val key = videoFrameRatePreferenceKey ?: return
         if (rate != null && rate !in availableVideoFrameRates) return
         val forced = rate != null && rate == forcedVideoRate(lensFacing)
-        if (rate == selectedVideoFrameRate && (forced || !commonPref.contains(forcedRateKey(lensFacing)))) return
+        val stored = ForcedFrameRate.storedAfterChoice(currentMode == CameraMode.VIDEO, forced)
+        if (rate == selectedVideoFrameRate &&
+            (stored != ForcedFrameRate.Stored.CLEAR || !commonPref.contains(forcedRateKey(lensFacing)))) return
         commonPref.edit {
-            if (forced) {
-                putString(forcedRateKey(lensFacing), rate.preferenceValue())
+            if (stored == ForcedFrameRate.Stored.SET) {
+                putString(forcedRateKey(lensFacing), rate!!.preferenceValue())
             } else {
-                remove(forcedRateKey(lensFacing))
+                if (stored == ForcedFrameRate.Stored.CLEAR) remove(forcedRateKey(lensFacing))
                 if (rate == null) remove(key) else putString(key, rate.preferenceValue())
             }
         }

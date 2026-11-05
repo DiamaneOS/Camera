@@ -20,6 +20,16 @@ class ForcedFrameRateTest {
         assertNull(ForcedFrameRate.offered(60, highSpeed))
     }
 
+    @Test fun aVideoModeChoiceSetsOrClearsTheForcedRate() {
+        assertEquals(ForcedFrameRate.Stored.SET, ForcedFrameRate.storedAfterChoice(videoMode = true, forced = true))
+        assertEquals(ForcedFrameRate.Stored.CLEAR, ForcedFrameRate.storedAfterChoice(videoMode = true, forced = false))
+    }
+
+    @Test fun aSlowMotionChoiceKeepsTheVideoModeForcedRate() {
+        // The forced rate belongs to video mode. Picking 240 fps in slow motion says nothing about it.
+        assertEquals(ForcedFrameRate.Stored.KEEP, ForcedFrameRate.storedAfterChoice(videoMode = false, forced = false))
+    }
+
     @Test fun fullHdAt60NeedsLevel42() {
         // 8160 macroblocks x 60 = 489600 per second: above 4.1's 245760, within 4.2's 522240.
         assertEquals(CodecProfileLevel.AVCLevel42,
