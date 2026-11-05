@@ -164,19 +164,7 @@ private val exifAttributes = arrayOf(
 )
 
 fun ExifInterface.fixExif(captureTime: Date) {
-    val millis = TimeZone.getDefault().getOffset(captureTime.time)
-
-    val totalMins = (millis / (1000 * 60))
-
-    val hours = (totalMins / 60)
-    var hoursStrRep = hours.toString().padStart(2, '0')
-
-    if (hours >= 0)
-        hoursStrRep = "+${hoursStrRep}"
-
-    val mins = (totalMins % 60).toString().padEnd(2, '0')
-
-    val offsetTime = "$hoursStrRep:$mins"
+    val offsetTime = exifOffsetTime(TimeZone.getDefault().getOffset(captureTime.time))
 
     setAttribute(ExifInterface.TAG_OFFSET_TIME, offsetTime)
     setAttribute(ExifInterface.TAG_OFFSET_TIME_ORIGINAL, offsetTime)
