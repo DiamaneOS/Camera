@@ -200,8 +200,8 @@ android {
         targetSdk = 37
         // DiamaneOS: upstream version x 100 + DiamaneOS revision (93.2 = 9302). Always higher than
         // upstream's own numbers and only ever rising, as Android refuses a lower version as an update.
-        versionCode = 9309
-        versionName = "93.9"
+        versionCode = 9310
+        versionName = "93.10"
 
         buildConfigField("boolean", "CAMERA_NEURAL_DENOISE_TEST", "false")
         buildConfigField("boolean", "CAMERA_JPEG_BURST_EVALUATION",
