@@ -1,9 +1,5 @@
-DiamaneOS fork of [GrapheneOS Camera](https://github.com/GrapheneOS/Camera). It changes:
-
-- the version number: upstream version x 100 + DiamaneOS revision
-- the rear camera, which can zoom out to the wider lenses
-- video resolution and frame rate, chosen from what each camera supports
-- slow motion, where a camera has high-speed recording
+DiamaneOS fork of [GrapheneOS Camera](https://github.com/GrapheneOS/Camera). Its changes are in the
+[release notes](https://github.com/DiamaneOS/Camera/releases).
 
 Upstream's description follows.
 
