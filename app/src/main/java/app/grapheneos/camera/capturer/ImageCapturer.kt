@@ -8,7 +8,12 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.graphics.Bitmap
 import android.os.Build
+import android.os.Handler
+import android.os.HandlerThread
 import android.util.Log
+import android.view.PixelCopy
+import android.view.Surface
+import android.view.SurfaceView
 import android.view.View
 import android.view.animation.AlphaAnimation
 import android.view.animation.Animation
@@ -24,6 +29,7 @@ import app.grapheneos.camera.ui.activities.SecureMainActivity
 import app.grapheneos.camera.ui.showIgnoringShortEdgeMode
 import app.grapheneos.camera.util.printStackTraceToString
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
+import java.io.ByteArrayOutputStream
 
 private const val imageFileFormat = ".jpg"
 
@@ -72,7 +78,9 @@ class ImageCapturer(val mActivity: MainActivity) {
             return
         }
 
-        if (!camConfig.canTakePicture) {
+        val route = PreviewSnapshot.route(camConfig.canTakePicture, mActivity.videoCapturer.isRecording,
+            camConfig.usesForcedFrameRate)
+        if (route == PreviewSnapshot.Route.UNAVAILABLE) {
             mActivity.showMessage(R.string.unsupported_taking_picture_while_recording)
             return
         }
@@ -95,6 +103,11 @@ class ImageCapturer(val mActivity: MainActivity) {
         }
 
         val preview = mActivity.imagePreview
+
+        if (route == PreviewSnapshot.Route.PREVIEW_COPY) {
+            copyPreviewFrame(imageMetadata, preview.width, preview.height)
+            return
+        }
 
         val imageCapture = camConfig.imageCapture!!
 
@@ -250,5 +263,11 @@ class ImageCapturer(val mActivity: MainActivity) {
 
     companion object {
         private const val TAG = "ImageCapturer"
+
+        private val previewCopies = PreviewSnapshot.Gate()
+        // Copies and encodes preview frames, away from the camera and main threads.
+        private val previewCopyHandler by lazy {
+            Handler(HandlerThread("PreviewCopy").apply { start() }.looper)
+        }
     }
 }

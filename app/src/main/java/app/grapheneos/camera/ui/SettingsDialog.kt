@@ -42,6 +42,7 @@ import androidx.core.content.ContextCompat
 import androidx.core.graphics.ColorUtils
 import androidx.core.view.ViewCompat
 import app.grapheneos.camera.CamConfig
+import app.grapheneos.camera.CameraMode
 import app.grapheneos.camera.R
 import app.grapheneos.camera.databinding.SettingsBinding
 import app.grapheneos.camera.ui.activities.MainActivity
@@ -65,7 +66,11 @@ class SettingsDialog(val mActivity: MainActivity, themedContext: Context) :
     var torchToggle: ToggleButton
     private var gridToggle: ImageView
     var videoQualitySpinner: Spinner
+    var videoFrameRateSpinner: Spinner
     private lateinit var vQAdapter: ArrayAdapter<String>
+    private var updatingVideoChoices = false
+    private var displayedVideoQuality: Quality? = null
+    private var frameRateChoices: List<VideoFrameRate?> = listOf(null)
     private var focusTimeoutSpinner: Spinner
     private var timerSpinner: Spinner
 
@@ -238,11 +243,29 @@ class SettingsDialog(val mActivity: MainActivity, themedContext: Context) :
                     p3: Long
                 ) {
 
-                    val choice = vQAdapter.getItem(position) as String
+                    if (updatingVideoChoices || mActivity.videoCapturer.isRecording ||
+                        position !in 0 until vQAdapter.count) return
+                    val choice = vQAdapter.getItem(position) ?: return
+                    if (videoQualitySpinner.selectedItem != choice) return
+                    val quality = titleToQuality(choice)
+                    if (quality == displayedVideoQuality) return
+                    displayedVideoQuality = quality
                     updateVideoQuality(choice)
                 }
 
                 override fun onNothingSelected(p0: AdapterView<*>?) {}
+            }
+
+        videoFrameRateSpinner = binding.videoFrameRateSpinner
+        videoFrameRateSpinner.onItemSelectedListener =
+            object : AdapterView.OnItemSelectedListener {
+                override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                    if (updatingVideoChoices || mActivity.videoCapturer.isRecording ||
+                        position !in frameRateChoices.indices ||
+                        videoFrameRateSpinner.selectedItemPosition != position) return
+                    camConfig.setVideoFrameRate(frameRateChoices[position])
+                }
+                override fun onNothingSelected(parent: AdapterView<*>?) {}
             }
 
         if (mActivity.requiresVideoModeOnly) {
@@ -250,9 +273,9 @@ class SettingsDialog(val mActivity: MainActivity, themedContext: Context) :
         }
 
         waitForFocusLockSwitch = binding.waitForFocusLockSwitch
-        waitForFocusLockSwitch.isChecked = camConfig.waitForFocusLock
+        waitForFocusLockSwitch.isChecked = camConfig.prioritizeCaptureQuality
         waitForFocusLockSwitch.setOnClickListener {
-            camConfig.waitForFocusLock = waitForFocusLockSwitch.isChecked
+            camConfig.prioritizeCaptureQuality = waitForFocusLockSwitch.isChecked
             if (camConfig.cameraProvider != null) {
                 camConfig.startCamera(true)
             }
@@ -385,10 +408,6 @@ class SettingsDialog(val mActivity: MainActivity, themedContext: Context) :
 
         window?.attributes?.layoutInDisplayCutoutMode =
             WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_DEFAULT
-        window?.setFlags(
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-        )
 
         var backgroundColor = ContextCompat.getColor(context, android.R.color.black)
         backgroundColor = ColorUtils.setAlphaComponent(backgroundColor, 150)
@@ -497,6 +516,7 @@ class SettingsDialog(val mActivity: MainActivity, themedContext: Context) :
         if (camConfig.isVideoMode) {
             includeAudioSetting.visibility = View.VISIBLE
             videoQualitySetting.visibility = View.VISIBLE
+            binding.videoFrameRateSetting.visibility = View.VISIBLE
             enableEISSetting.visibility = if (camConfig.canApplyVideoStabilization()) {
                 View.VISIBLE
             } else {
@@ -506,6 +526,7 @@ class SettingsDialog(val mActivity: MainActivity, themedContext: Context) :
             includeAudioSetting.visibility = View.GONE
             enableEISSetting.visibility = View.GONE
             videoQualitySetting.visibility = View.GONE
+            binding.videoFrameRateSetting.visibility = View.GONE
         }
 
         selfIlluminationSetting.visibility =
@@ -588,7 +609,7 @@ class SettingsDialog(val mActivity: MainActivity, themedContext: Context) :
 
     fun titleToQuality(title: String): Quality {
         return when (title) {
-            "2160p (UHD)" -> Quality.UHD
+            "2160p (UHD)", getString(R.string.video_quality_uhd) -> Quality.UHD
             "1080p (FHD)" -> Quality.FHD
             "720p (HD)" -> Quality.HD
             "480p (SD)" -> Quality.SD
@@ -797,7 +818,7 @@ class SettingsDialog(val mActivity: MainActivity, themedContext: Context) :
 
     private fun getTitleFor(quality: Quality): String {
         return when (quality) {
-            Quality.UHD -> "2160p (UHD)"
+            Quality.UHD -> getString(R.string.video_quality_uhd)
             Quality.FHD -> "1080p (FHD)"
             Quality.HD -> "720p (HD)"
             Quality.SD -> "480p (SD)"
@@ -889,10 +910,25 @@ class SettingsDialog(val mActivity: MainActivity, themedContext: Context) :
             android.R.layout.simple_spinner_dropdown_item
         )
 
+        val selection = if (camConfig.videoQuality == Quality.HIGHEST) 0 else
+            titles.indexOf(getTitleFor(camConfig.videoQuality)).coerceAtLeast(0)
+        displayedVideoQuality = titles.getOrNull(selection)?.let { titleToQuality(it) }
+        updatingVideoChoices = true
         videoQualitySpinner.adapter = vQAdapter
+        if (titles.isNotEmpty()) videoQualitySpinner.setSelection(selection, false)
+        updatingVideoChoices = false
+    }
 
         if (camConfig.videoQuality != Quality.HIGHEST) {
             videoQualitySpinner.setSelection(titles.indexOf(getTitleFor(camConfig.videoQuality)))
         }
+        val adapter = ArrayAdapter(mActivity, android.R.layout.simple_spinner_item, labels)
+        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+        updatingVideoChoices = true
+        videoFrameRateSpinner.adapter = adapter
+        videoFrameRateSpinner.setSelection(
+            frameRateChoices.indexOf(camConfig.selectedVideoFrameRate).coerceAtLeast(0), false)
+        videoFrameRateSpinner.isEnabled = !mActivity.videoCapturer.isRecording && frameRateChoices.size > 1
+        updatingVideoChoices = false
     }
 }

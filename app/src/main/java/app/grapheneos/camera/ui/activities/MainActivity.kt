@@ -711,7 +711,7 @@ open class MainActivity : AppCompatActivity(),
         // Check camera permission again if the user switches back to the app (maybe
         // after enabling/disabling the camera permission in Settings)
         // Will also be called by Android Lifecycle when the app starts up
-        checkPermissions()
+        checkPermissions(forceRebind = resumeRebind.onResume(videoCapturer.isRecording) && resumeRebindAllowed)
 
         if (camConfig.isQRMode) {
             startFocusTimer()
@@ -1497,10 +1497,10 @@ open class MainActivity : AppCompatActivity(),
         }
 
         camConfig.imageCapture?.targetRotation = tr
+        // CameraX applies a new rotation from the next recording on. The current one keeps its own,
+        // so the controls below can turn with the phone while recording.
         camConfig.videoCapture?.targetRotation = tr
         camConfig.iAnalyzer?.targetRotation = tr
-
-        if (videoCapturer.isRecording) return
 
         var iconRotation = (360f - ((orientation - getRotation() + 360) % 360)) % 360
 

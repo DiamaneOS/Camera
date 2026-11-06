@@ -282,6 +282,15 @@ class VideoCapturer(private val mActivity: MainActivity) {
                         recording?.pause()
                     }
                 }
+                if (includeAudio) {
+                    // Keep the cue out of recordings that include microphone audio.
+                    camConfig.mPlayer.playVRStartSound(handler, beginRecording)
+                } else {
+                    // DiamaneOS: silent video and slow motion need not wait for the entire cue
+                    // before starting the encoder. Play the cue while acquisition starts.
+                    camConfig.mPlayer.playVRStartSound(handler, Runnable {})
+                    beginRecording.run()
+                }
             }
         }
     }
@@ -483,6 +492,7 @@ class VideoCapturer(private val mActivity: MainActivity) {
         // The recording is made with the recorder and audio choice of the press, but its output
         // can take seconds to arrive: these must not rebind the camera or flip the audio meanwhile.
         mActivity.settingsDialog.videoQualitySpinner.isEnabled = false
+        mActivity.settingsDialog.videoFrameRateSpinner.isEnabled = false
         mActivity.settingsDialog.enableEISToggle.isEnabled = false
         mActivity.settingsDialog.waitForFocusLockSwitch.isEnabled = false
         mActivity.settingsDialog.includeAudioToggle.isEnabled = false
@@ -495,6 +505,9 @@ class VideoCapturer(private val mActivity: MainActivity) {
         // mActivity.micOffIcon.visibility = View.GONE
 
         animateCaptureButtonCorners(dp16, dp8)
+
+        // The microphone may be blocked already, then the sound is silent from the start.
+        camConfig.onMicrophoneAccessChanged()
 
         // The user may have paused before the recording actually started.
         if (isPaused) {
@@ -566,8 +579,12 @@ class VideoCapturer(private val mActivity: MainActivity) {
         mActivity.muteToggle.visibility = View.GONE
 
         isRecording = false
+        camConfig.onMicrophoneAccessChanged()
+        mActivity.settingsDialog.reloadFrameRates()
 
-        mActivity.forceUpdateOrientationSensor()
+        // The controls already follow the phone. A forced update would reset them to the display
+        // rotation, turning landscape controls to portrait and back.
+        mActivity.sensorNotifier?.notifyListeners()
     }
 
     fun muteRecording() {
@@ -582,17 +599,21 @@ class VideoCapturer(private val mActivity: MainActivity) {
         check(camConfig.includeAudio)
         isMuted = false
         recording?.mute(false)
+        camConfig.onMicrophoneAccessChanged()
     }
 
-    fun stopRecording() {
+    /** False when there was no recording or queued start left to stop. */
+    fun stopRecording(): Boolean {
         cancelDeferredStart?.let {
             it()
-            return
+            return true
         }
 
-        recording?.stop()
-        recording?.close()
+        val current = recording ?: return false
+        current.stop()
+        current.close()
         recording = null
+        return true
     }
 
     fun abandonDeferredStart() {
