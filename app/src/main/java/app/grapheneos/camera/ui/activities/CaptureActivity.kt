@@ -103,6 +103,7 @@ open class CaptureActivity : MainActivity() {
         thirdOption.visibility = View.INVISIBLE
 
         captureButton.setOnClickListener {
+            if (previewHold.holding(android.os.SystemClock.elapsedRealtime()) && !cdTimer.isRunning) return@setOnClickListener
             if (timerDuration == 0) {
                 takePicture()
             } else {

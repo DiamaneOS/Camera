@@ -873,6 +873,8 @@ open class MainActivity : AppCompatActivity(),
                 }
             } else if (camConfig.captureBlocked() && !cdTimer.isRunning) {
                 showMessage(R.string.camera_access_off)
+            } else if (previewHold.holding(SystemClock.elapsedRealtime()) && !cdTimer.isRunning) {
+                Log.i(TAG, "Camera not settled after a rebind, press ignored")
             } else {
                 if (timerDuration == 0) {
                     imageCapturer.takePicture()

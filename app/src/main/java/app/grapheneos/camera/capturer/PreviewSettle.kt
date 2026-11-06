@@ -37,6 +37,8 @@ internal object PreviewSettle {
         /** A rebind without capture results: never hold its first frame. */
         fun disarm() { generation++; waiting = false; awaitingResult = false }
         fun current() = generation
+        /** The new camera shows no settled frame yet. A photo now would come out dark. */
+        fun holding(now: Long) = waiting && !settled && streamingSince.let { it == null || now - it < MAX_HOLD_MS }
 
         /** The new stream shows frames. True while the old frame should stay. */
         fun streaming(now: Long): Boolean {

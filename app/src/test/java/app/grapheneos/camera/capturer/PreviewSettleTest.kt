@@ -64,4 +64,23 @@ class PreviewSettleTest {
         assertFalse(hold.streaming(0))
         assertFalse(hold.awaitingResult)
     }
+
+    @Test fun noPhotoUntilTheNewCameraSettles() {
+        val hold = PreviewSettle.Hold()
+        val generation = hold.arm()
+        assertTrue(hold.holding(0))
+        hold.streaming(100)
+        assertTrue(hold.holding(100 + PreviewSettle.MAX_HOLD_MS - 1))
+        hold.settle(generation)
+        assertFalse(hold.holding(200))
+    }
+
+    @Test fun photosAreAllowedOnceTheHoldRunsOut() {
+        val hold = PreviewSettle.Hold()
+        hold.arm()
+        hold.streaming(100)
+        assertFalse(hold.holding(100 + PreviewSettle.MAX_HOLD_MS))
+        hold.disarm()
+        assertFalse(hold.holding(0))
+    }
 }
