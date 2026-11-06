@@ -248,10 +248,13 @@ open class MainActivity : AppCompatActivity(),
 
     private val handler = Handler(Looper.getMainLooper())
     private val previewRecoveryPolicy=app.grapheneos.camera.capturer.PreviewRecoveryPolicy()
+    private val resumeRebind=app.grapheneos.camera.capturer.ResumeRebind()
     private val previewWatchdog=object: Runnable {
         override fun run() {
             if(!isStarted || isDestroyed || isFinishing) return
             camConfig.retryBlockRebind()
+            val busy=videoCapturer.isRecording || imageCapturer.isTakingPicture || camConfig.directBurstActive
+            if(resumeRebind.afterRecording(busy) && resumeRebindAllowed) camConfig.startCamera(forced=true)
             val standardPreview=camConfig.currentMode.extensionMode==androidx.camera.extensions.ExtensionMode.NONE ||
                 camConfig.softwareNight || camConfig.softwarePortrait
             val eligible=lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.RESUMED) && standardPreview &&
@@ -636,7 +639,7 @@ open class MainActivity : AppCompatActivity(),
         // Check camera permission again if the user switches back to the app (maybe
         // after enabling/disabling the camera permission in Settings)
         // Will also be called by Android Lifecycle when the app starts up
-        checkPermissions(forceRebind = !isQRDialogShowing && !(this is VideoCaptureActivity && thirdOption.visibility==View.VISIBLE))
+        checkPermissions(forceRebind = resumeRebind.onResume(videoCapturer.isRecording) && resumeRebindAllowed)
 
         if (camConfig.isQRMode) {
             startFocusTimer()
@@ -1314,6 +1317,7 @@ open class MainActivity : AppCompatActivity(),
     private var isQRDialogShowing = false
 
     // Not behind a capture review screen or a QR result.
+    private val resumeRebindAllowed get() = !isQRDialogShowing && !(this is VideoCaptureActivity && thirdOption.visibility==View.VISIBLE)
     internal val previewRebindAllowed get() = !isQRDialogShowing && previewView.isVisible
 
     fun onScanResultSuccess(rawText: String) {
@@ -2079,6 +2083,7 @@ open class MainActivity : AppCompatActivity(),
         handler.removeCallbacks(thumbnailCheck)
         handler.removeCallbacks(previewWatchdog)
         processingCaptureAfterPermission = false
+        resumeRebind.onStop()
         // Stop explicitly rather than letting the unbind tear the recording down for us.
         if (this::videoCapturer.isInitialized && videoCapturer.isRecording) {
             updateLastFrame()
