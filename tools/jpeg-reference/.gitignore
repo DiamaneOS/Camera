@@ -1,0 +1,8 @@
+native-fixtures/
+native-large-fixtures/
+*-results.json
+__pycache__/
+jpegburst_cli
+bounds_test
+cancellation_test
+*.dSYM/

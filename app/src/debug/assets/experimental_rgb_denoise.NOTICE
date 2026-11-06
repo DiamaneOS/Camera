@@ -1,0 +1,4 @@
+Local development evaluation only. Raspberry Pi AI_denoise
+https://github.com/raspberrypi/AI_denoise/tree/0e102180f57e9215381e40f97a76c5350d29d99c
+nafnet_rgb_small.tflite SHA-256 05f80a8764e190b2fbb6b5ccb690a78ba090d2bec7532bc4801d51d6c031a569
+BSD-2-Clause. Original model unchanged.

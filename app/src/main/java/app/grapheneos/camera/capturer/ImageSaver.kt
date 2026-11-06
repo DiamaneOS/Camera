@@ -74,13 +74,18 @@ class ImageSaver(
     val contentResolver = appContext.contentResolver
     val mainThreadExecutor = appContext.mainExecutor
 
-    private var isCancelled = false
+    @Volatile private var isCancelled = false
 
     fun cancelCaptureRequest() {
         isCancelled = true
     }
 
     override fun onCaptureSuccess(image: ImageProxy) {
+        // DiamaneOS: a cancelled request that CameraX still completes is dropped, not saved.
+        if (isCancelled) {
+            image.close()
+            return
+        }
         mainThreadExecutor.execute(imageCapturer::onCaptureSuccess)
 
         try {
@@ -316,7 +321,7 @@ class ImageSaver(
         return IMAGE_NAME_PREFIX + dateString() + imageFileFormat
     }
 
-    private fun mimeType() = MimeTypeMap.getSingleton().getMimeTypeFromExtension(imageFileFormat) ?: "image/*"
+    private fun mimeType() = MimeTypeMap.getSingleton().getMimeTypeFromExtension(imageFileFormat.removePrefix(".")) ?: "image/*"
 
     @Throws(Exception::class)
     fun obtainOutputUri(): Uri? {

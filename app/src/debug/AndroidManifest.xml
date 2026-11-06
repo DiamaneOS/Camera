@@ -1,0 +1,26 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="app.grapheneos.camera.gpuprobe.BIND_PROCESSOR" />
+    <application android:allowBackup="false">
+        <provider android:name=".RecoveryDocumentsProvider" android:authorities="${applicationId}.recovery-test"
+            android:exported="true" android:grantUriPermissions="true" android:permission="android.permission.MANAGE_DOCUMENTS">
+            <intent-filter><action android:name="android.content.action.DOCUMENTS_PROVIDER" /></intent-filter>
+        </provider>
+        <activity android:name=".RecoveryQueueTestActivity" android:exported="true" android:permission="android.permission.DUMP" />
+        <activity android:name=".YuvJpegComparisonTestActivity" android:exported="true" android:permission="android.permission.DUMP" />
+        <activity android:name=".JpegBurstComparisonTestActivity" android:exported="true" android:permission="android.permission.DUMP" />
+        <activity android:name=".TemporalPreviewTestActivity" android:exported="true" android:permission="android.permission.DUMP" />
+        <activity android:name=".PreviewNoiseTestActivity" android:exported="true" android:permission="android.permission.DUMP" />
+        <activity android:name=".PortraitOverlayTestActivity" android:exported="true" android:permission="android.permission.DUMP" />
+        <activity android:name=".PreviewShaderTestActivity" android:exported="true" android:permission="android.permission.DUMP" />
+        <activity android:name=".PreviewSnapshotTestActivity" android:exported="true" android:permission="android.permission.DUMP" />
+        <activity android:name=".PreviewWorkerTestActivity" android:exported="true" android:permission="android.permission.DUMP" />
+        <activity android:name=".ProcessingTestActivity" android:exported="true" android:permission="android.permission.DUMP" />
+        <activity android:name=".DepthTestActivity" android:exported="true" android:permission="android.permission.DUMP" />
+    <activity android:name=".CapabilitiesTestActivity" android:exported="true" android:permission="android.permission.DUMP" />
+    <activity android:name=".RawNoiseTestActivity" android:exported="true" android:permission="android.permission.DUMP" />
+    <activity android:name=".PortraitIntegrationTestActivity" android:exported="true" android:permission="android.permission.DUMP"/>
+        <activity android:name=".SegmentationBenchmarkActivity" android:exported="true" android:permission="android.permission.DUMP" />
+        <activity android:name=".GpuBenchmarkActivity" android:exported="true" android:permission="android.permission.DUMP" />
+        <service android:name=".GpuBenchmarkService" android:exported="false" android:isolatedProcess="true" android:process=":gpu_test" />
+    </application>
+</manifest>

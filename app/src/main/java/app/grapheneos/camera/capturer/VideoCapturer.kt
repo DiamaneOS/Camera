@@ -182,6 +182,11 @@ class VideoCapturer(private val mActivity: MainActivity) {
         if (camConfig.camera == null) return
         val recorder = camConfig.videoCapture?.output ?: return
         if (isRecording) return
+        // No frames would arrive, and the rebind waits for the recording to end.
+        if (camConfig.captureBlocked()) {
+            mActivity.showMessage(R.string.camera_access_off)
+            return
+        }
         isRecording = true
 
         val dateString = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())

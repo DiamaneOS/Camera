@@ -171,6 +171,7 @@ open class MainActivity : AppCompatActivity(),
     lateinit var azToggle: QRToggle
 
     lateinit var imageCapturer: ImageCapturer
+    val isImageCapturerReady get() = this::imageCapturer.isInitialized
     lateinit var videoCapturer: VideoCapturer
 
     lateinit var flipCameraCircle: View
@@ -920,6 +921,10 @@ open class MainActivity : AppCompatActivity(),
                 } else {
                     setCaptureButtonIcon(R.drawable.torch_off_button, R.string.turn_torch_on)
                 }
+            } else if (camConfig.captureBlocked() && !cdTimer.isRunning) {
+                showMessage(R.string.camera_access_off)
+            } else if (previewHold.holding(SystemClock.elapsedRealtime()) && !cdTimer.isRunning) {
+                Log.i(TAG, "Camera not settled after a rebind, press ignored")
             } else {
                 if (timerDuration == 0) {
                     imageCapturer.takePicture()

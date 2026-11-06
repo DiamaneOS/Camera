@@ -21,6 +21,7 @@ import android.view.animation.LinearInterpolator
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageCapture
 import androidx.camera.core.ImageCaptureException
+import app.grapheneos.camera.CameraMode
 import app.grapheneos.camera.App
 import app.grapheneos.camera.CapturedItem
 import app.grapheneos.camera.R
@@ -37,18 +38,46 @@ class ImageCapturer(val mActivity: MainActivity) {
     val camConfig = mActivity.camConfig
 
     val isTakingPicture: Boolean
-        get() = currentImageSaver != null
+        get() = currentImageSaver != null || rawFileCapture != null || processedCapture != null
+
+    /** A photo whose frames aren't in yet, so a block can still cancel it. */
+    val isAcquiring: Boolean get() = isTakingPicture && processedCapture?.isProcessing != true
+
+    /** Captures the UI must not interrupt: processed photos and split JPEG + RAW pairs. */
+    val isProcessingCapture: Boolean get() = processedCapture != null || rawFileCapture?.split == true
+
+    var captureZoom: Float? = null
+        private set
 
     private var currentImageSaver : ImageSaver? = null
+    private var rawFileCapture: RawFileCapture? = null
+    @Volatile private var processedCapture: ProcessedCapture? = null
+
+    internal fun isCurrent(capture: ProcessedCapture) = processedCapture === capture
+    internal fun isCurrent(capture: RawFileCapture) = rawFileCapture === capture
+
+    fun cancelAcquiringCapture() {
+        if (processedCapture?.isProcessing != true) cancelPendingCaptureRequest()
+    }
+
+    internal fun showProcessingProgress(capture: ProcessedCapture, frame: Int, count: Int) {
+        if (isCurrent(capture)) mActivity.showProcessingStatus(frame, count)
+    }
 
     private var isCaptureButtonFaded = false
 
     private fun fadeCaptureButton() {
+        captureZoom = camConfig.displayZoom
         // The shutter stops the recording a snapshot is taken from, so it stays live for one
         if (mActivity.videoCapturer.isRecording) return
 
         isCaptureButtonFaded = true
         mActivity.captureButton.isEnabled = false
+        if (isProcessingCapture) {
+            mActivity.settingsIcon.isEnabled = false
+            mActivity.exposureBar.hidePanel()
+            mActivity.zoomBar.hidePanel()
+        }
 
         val animation: Animation = AlphaAnimation(mActivity.captureButton.alpha, 0.6f)
         animation.duration = 200
@@ -63,6 +92,7 @@ class ImageCapturer(val mActivity: MainActivity) {
 
         isCaptureButtonFaded = false
         mActivity.captureButton.isEnabled = true
+        mActivity.settingsIcon.isEnabled = !camConfig.directBurstActive
 
         val animation: Animation = AlphaAnimation(mActivity.captureButton.alpha, 1f)
         animation.duration = 200
@@ -74,6 +104,11 @@ class ImageCapturer(val mActivity: MainActivity) {
 
     @SuppressLint("RestrictedApi")
     fun takePicture() {
+        // A request now would wait in CameraX and be taken when access returns.
+        if (camConfig.captureBlocked()) {
+            mActivity.showMessage(R.string.camera_access_off)
+            return
+        }
         if (camConfig.camera == null) {
             return
         }
@@ -88,6 +123,9 @@ class ImageCapturer(val mActivity: MainActivity) {
         if (isTakingPicture) {
             return
         }
+
+        if (camConfig.usesProcessingCapture &&
+            !mActivity.ensureProcessingNotificationPermission()) return
 
         val imageMetadata = ImageCapture.Metadata()
         imageMetadata.isReversedHorizontal = camConfig.lensFacing == CameraSelector.LENS_FACING_FRONT
@@ -132,15 +170,28 @@ class ImageCapturer(val mActivity: MainActivity) {
     fun cancelPendingCaptureRequest() {
         if (isTakingPicture) {
             currentImageSaver?.cancelCaptureRequest()
+            rawFileCapture?.cancel()
+            processedCapture?.cancel()
+            processedCapture = null
+            mActivity.clearProcessingStatus()
+            rawFileCapture = null
 
             unfadeCaptureButton()
             currentImageSaver = null
+            captureZoom = null
+            mActivity.refreshCaptureHints()
         }
     }
 
     fun onCaptureSuccess() {
-        unfadeCaptureButton()
         currentImageSaver = null
+        rawFileCapture = null
+        processedCapture = null
+        captureZoom = null
+        unfadeCaptureButton()
+        mActivity.clearProcessingStatus()
+        mActivity.refreshCaptureHints()
+        mActivity.updateLensControls()
 
         camConfig.mPlayer.playShutterSound()
         camConfig.snapPreview()
@@ -175,11 +226,24 @@ class ImageCapturer(val mActivity: MainActivity) {
         }
     }
 
+    internal fun onProcessedAcquisitionComplete(capture: ProcessedCapture, item: CapturedItem) {
+        if (!isCurrent(capture)) return
+        onCaptureSuccess()
+        onImageSaverSuccess(item)
+        mActivity.previewLoader.visibility = View.GONE
+        mActivity.updateThumbnail()
+    }
+
     fun onCaptureError(exception: ImageCaptureException) {
         Log.e(TAG, "onCaptureError", exception)
 
         unfadeCaptureButton()
         currentImageSaver = null
+        rawFileCapture = null
+        processedCapture = null
+        captureZoom = null
+        mActivity.clearProcessingStatus()
+        mActivity.refreshCaptureHints()
         mActivity.previewLoader.visibility = View.GONE
 
         if (mActivity.isStarted) {
@@ -257,6 +321,12 @@ class ImageCapturer(val mActivity: MainActivity) {
     }
 
     fun onThumbnailGenerated(item: CapturedItem, thumbnail: Bitmap?) {
+        // DiamaneOS: a later capture or a finished queued photo may have taken the button since.
+        if (camConfig.lastCapturedItem?.uri != item.uri) {
+            thumbnail?.recycle()
+            return
+        }
+        mActivity.isThumbnailLoaded = thumbnail != null
         mActivity.previewLoader.visibility = View.GONE
         mActivity.showThumbnail(item, thumbnail)
     }

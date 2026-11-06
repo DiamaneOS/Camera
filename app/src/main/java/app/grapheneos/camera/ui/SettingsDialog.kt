@@ -512,6 +512,9 @@ class SettingsDialog(val mActivity: MainActivity, themedContext: Context) :
         })
     }
 
+    private fun reloadPhotoFormats() =
+        PhotoFormatSettings(binding, camConfig, mActivity, ::showOnlyRelevantSettings).reloadPhotoFormats()
+
     fun showOnlyRelevantSettings() {
         if (camConfig.isVideoMode) {
             includeAudioSetting.visibility = View.VISIBLE
