@@ -22,6 +22,7 @@ class ZoomBar @JvmOverloads constructor(context: Context, attrs: AttributeSet? =
     private var minimum = 1f
     private var maximum = 1f
     private var value = 1f
+    private var heldOpen = false
     var isDragging = false
         private set
     val gestureZoom: Float? get() = value.takeIf { isDragging }
@@ -34,6 +35,7 @@ class ZoomBar @JvmOverloads constructor(context: Context, attrs: AttributeSet? =
         if (!isDragging) handler.postDelayed(close, 2000)
     }
     internal fun hidePanel() {
+        heldOpen = false
         if (!isDragging && ::activity.isInitialized) activity.zoomBarPanel.visibility = GONE
     }
     fun updateThumb(shouldShowPanel: Boolean = true) {
@@ -42,7 +44,13 @@ class ZoomBar @JvmOverloads constructor(context: Context, attrs: AttributeSet? =
         value = activity.camConfig.displayZoom
         activity.updateLensControls()
         invalidate()
-        if (shouldShowPanel) showPanel() else hidePanel()
+        if (shouldShowPanel || heldOpen) showPanel() else hidePanel()
+    }
+    /** A lens button pressed while the bar is open keeps it open, also at 1x and through a rebind. */
+    fun holdOpen() {
+        if (!::activity.isInitialized || activity.zoomBarPanel.visibility != VISIBLE) return
+        heldOpen = true
+        showPanel()
     }
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
         setMeasuredDimension(resolveSize((56*density).toInt(), widthMeasureSpec), resolveSize((250*density).toInt(),heightMeasureSpec))

@@ -1142,7 +1142,7 @@ open class MainActivity : AppCompatActivity(),
             button.contentDescription = getString(R.string.select_lens_zoom, formatter.format(ratio))
             button.isChecked = selected == ratio
             button.isEnabled = !imageCapturer.isTakingPicture && !camConfig.directBurstActive
-            button.setOnClickListener { camConfig.selectZoomPreset(ratio) }
+            button.setOnClickListener { zoomBar.holdOpen(); camConfig.selectZoomPreset(ratio) }
         }
         // Keep circular targets large enough for enlarged text as well as touch.
         val visibleButtons = listOf(binding.lensWide, binding.lensMain, binding.lensTwo).filter { it.visibility == View.VISIBLE }
