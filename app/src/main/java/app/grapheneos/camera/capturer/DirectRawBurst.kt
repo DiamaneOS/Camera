@@ -171,6 +171,8 @@ internal class DirectRawBurst(
             val minDuration = map.getOutputMinFrameDuration(ImageFormat.RAW_SENSOR, rawSize)
             val freshFocus = cameraInfo.get(CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES)?.contains(CaptureRequest.CONTROL_AF_MODE_AUTO) == true &&
                 (cameraInfo.get(CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE) ?: 0f) > 0f
+            // Set when autofocus does not settle in time: the burst keeps this lens position.
+            var heldFocus: Float? = null
             fun request(template: Int, surface: android.view.Surface, triggerFocus: Boolean = false, metering: Boolean = false): CaptureRequest = device.createCaptureRequest(template).apply {
                 addTarget(surface)
                 set(CaptureRequest.CONTROL_AE_MODE, if (metering) CaptureRequest.CONTROL_AE_MODE_ON else CaptureRequest.CONTROL_AE_MODE_OFF)
@@ -202,13 +204,13 @@ internal class DirectRawBurst(
                     val left = active.centerX() - width / 2; val top = active.centerY() - height / 2
                     set(CaptureRequest.SCALER_CROP_REGION, android.graphics.Rect(left, top, left + width, top + height))
                 }
-                if (freshFocus) {
+                if (freshFocus && heldFocus == null) {
                     set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_AUTO)
                     set(CaptureRequest.CONTROL_AF_TRIGGER, if (triggerFocus) CaptureRequest.CONTROL_AF_TRIGGER_START else CaptureRequest.CONTROL_AF_TRIGGER_IDLE)
                     if ((cameraInfo.get(CameraCharacteristics.CONTROL_MAX_REGIONS_AF) ?: 0) > 0) {
                         initial.get(CaptureResult.CONTROL_AF_REGIONS)?.let { set(CaptureRequest.CONTROL_AF_REGIONS, it) }
                     }
-                } else initial.get(CaptureResult.LENS_FOCUS_DISTANCE)?.let {
+                } else (heldFocus ?: initial.get(CaptureResult.LENS_FOCUS_DISTANCE))?.let {
                     set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF)
                     set(CaptureRequest.LENS_FOCUS_DISTANCE, it)
                 }
@@ -228,6 +230,7 @@ internal class DirectRawBurst(
             val focusing = AtomicBoolean(!freshFocus)
             val manualScene = AtomicBoolean()
             var settledFocus: Float? = null
+            var lastFocus: Float? = null
             val readiness = RawFocusReadiness()
             var meteringFrames = 0
             val warmDeadline = SystemClock.elapsedRealtime() + 5_000
@@ -236,6 +239,7 @@ internal class DirectRawBurst(
                 override fun onCaptureCompleted(s: CameraCaptureSession, r: CaptureRequest, result: TotalCaptureResult) {
                     val ae = result.get(CaptureResult.CONTROL_AE_STATE)
                     val af = result.get(CaptureResult.CONTROL_AF_STATE)
+                    result.get(CaptureResult.LENS_FOCUS_DISTANCE)?.takeIf { it.isFinite() }?.let { lastFocus = it }
                     val focusLocked = !freshFocus || af == CaptureResult.CONTROL_AF_STATE_FOCUSED_LOCKED || af == CaptureResult.CONTROL_AF_STATE_NOT_FOCUSED_LOCKED
                     val lensStationary = result.get(CaptureResult.LENS_STATE) != CaptureResult.LENS_STATE_MOVING
                     val automaticReady = focusing.get() && focusLocked && lensStationary &&
@@ -280,7 +284,17 @@ internal class DirectRawBurst(
             }
             while (!warmed.await(50, TimeUnit.MILLISECONDS)) {
                 checkActive()
-                check(SystemClock.elapsedRealtime() < warmDeadline) { "Burst sensor focus did not settle" }
+                if (SystemClock.elapsedRealtime() >= warmDeadline) {
+                    // Focus did not settle, for example while the phone sways. Take the burst at
+                    // the lens position it has now instead of failing the photo.
+                    val focus = lastFocus ?: initial.get(CaptureResult.LENS_FOCUS_DISTANCE)
+                    check(focus != null) { "Burst sensor focus did not settle" }
+                    heldFocus = focus
+                    settledFocus = focus
+                    timings["warmFocusHeld"] = 1
+                    warmed.countDown()
+                    break
+                }
             }
             checkActive()
             if (scene != null) {
