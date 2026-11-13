@@ -1,9 +1,14 @@
 package app.grapheneos.camera.ui
 
+import kotlin.math.abs
 import kotlin.math.roundToInt
+import kotlin.math.roundToLong
 
 object TabStripSnap {
     private const val GLIDE_SECONDS = 0.1f
+    private const val SETTLE_MS = 250L
+    private const val SHORTEST_SETTLE_MS = 120L
+    private const val LONGEST_SETTLE_MS = 400L
 
     /**
      * The index of the tab under the middle of the strip at scroll position [x], or -1 without
@@ -31,4 +36,17 @@ object TabStripSnap {
      * the px per second it was scrolling at, so a flick carries past the tab it was lifted on.
      */
     fun landing(x: Int, velocity: Float): Int = x + (velocity * GLIDE_SECONDS).roundToInt()
+
+    /**
+     * How long the strip takes to come to rest [distance] px on, in ms. A glide that slows down
+     * evenly starts at twice its average speed, so one that takes twice the time [distance]
+     * needs at [velocity] carries on at the speed the finger left with. A finger at rest or one
+     * that moved away from the tab gets a plain short glide.
+     */
+    fun settleMillis(distance: Int, velocity: Float): Long {
+        if (distance == 0) return 0
+        if (velocity == 0f || (velocity > 0) != (distance > 0)) return SETTLE_MS
+        return (2000f * abs(distance) / abs(velocity)).roundToLong()
+            .coerceIn(SHORTEST_SETTLE_MS, LONGEST_SETTLE_MS)
+    }
 }

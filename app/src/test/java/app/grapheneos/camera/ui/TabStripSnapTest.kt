@@ -60,4 +60,24 @@ class TabStripSnapTest {
         assertEquals(3, TabStripSnap.index(points, TabStripSnap.landing(centre(2) + 60, 2000f)))
         assertEquals(1, TabStripSnap.index(points, TabStripSnap.landing(centre(2) - 60, -2000f)))
     }
+
+    @Test
+    fun theGlideStartsAtTheSpeedTheFingerLeftWith() {
+        // Slowing down evenly over 180 px from 2000 px a second takes 180 ms, in either direction.
+        assertEquals(180L, TabStripSnap.settleMillis(180, 2000f))
+        assertEquals(180L, TabStripSnap.settleMillis(-180, -2000f))
+    }
+
+    @Test
+    fun theGlideIsNeitherAbruptNorDrawnOut() {
+        assertEquals(120L, TabStripSnap.settleMillis(40, 5000f))
+        assertEquals(400L, TabStripSnap.settleMillis(120, 100f))
+    }
+
+    @Test
+    fun aStripAtRestOrMovingAwayGlidesBackPlainly() {
+        assertEquals(250L, TabStripSnap.settleMillis(60, 0f))
+        assertEquals(250L, TabStripSnap.settleMillis(-60, 300f))
+        assertEquals(0L, TabStripSnap.settleMillis(0, 2000f))
+    }
 }

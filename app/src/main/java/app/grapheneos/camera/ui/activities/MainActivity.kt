@@ -725,7 +725,14 @@ open class MainActivity : AppCompatActivity(),
 
         tabLayout.setOnTouchListener { _, motionEvent ->
             if (motionEvent.action == MotionEvent.ACTION_UP) {
-                finalizeMode(tabLayout.tabAtRelease())
+                // Switching mode holds up the main thread, which would stop the strip where the
+                // finger left it. So the strip glides on to its tab first and the mode is taken
+                // once, when it rests there. A photo being taken by then keeps its mode.
+                val tab = tabLayout.tabAtRelease()
+                if (tab == null) finalizeMode() else tabLayout.settleOn(tab) {
+                    finalizeMode(if (imageCapturer.isTakingPicture)
+                        tabLayout.getTabForMode(camConfig.currentMode) else tab)
+                }
                 return@setOnTouchListener true
             }
 

@@ -1,11 +1,13 @@
 package app.grapheneos.camera.ui
 
+import android.animation.ValueAnimator
 import android.content.Context
 import android.os.SystemClock
 import android.util.AttributeSet
 import android.view.MotionEvent
 import android.view.VelocityTracker
 import android.view.ViewGroup
+import android.view.animation.DecelerateInterpolator
 import app.grapheneos.camera.CameraMode
 import com.google.android.material.tabs.TabLayout
 
@@ -24,6 +26,11 @@ class BottomTabLayout @JvmOverloads constructor(
 
     // How fast the strip was scrolling when the finger last left it, in px per second.
     private var releaseVelocity = 0f
+
+    // The strip is gliding on to the tab the finger let go on.
+    private var gliding = false
+    private var glide: ValueAnimator? = null
+    private var settled: Runnable? = null
 
     // The tab TabLayout is scrolling to the middle, and since when.
     private var centering: Tab? = null
@@ -53,6 +60,7 @@ class BottomTabLayout @JvmOverloads constructor(
             MotionEvent.ACTION_DOWN -> {
                 touching = true
                 centering = null
+                cancelSettle()
                 velocityTracker?.recycle()
                 velocityTracker = VelocityTracker.obtain()
             }
@@ -74,9 +82,65 @@ class BottomTabLayout @JvmOverloads constructor(
     }
 
     // TabLayout scrolls a newly selected tab to the middle by itself. Under a finger that would
-    // pull the strip away from it, so the strip stays where the finger put it.
+    // pull the strip away from it, so the strip stays where the finger put it. The glide after
+    // the finger has its own scroll too.
     override fun scrollTo(x: Int, y: Int) {
-        if (!touching) super.scrollTo(x, y)
+        if (!touching && !gliding) super.scrollTo(x, y)
+    }
+
+    /**
+     * Lets the strip glide on to [tab] from the speed the finger left with, and calls [onSettled]
+     * once it rests there with the highlight on it. A new touch, or a tab selected from elsewhere,
+     * ends the glide without the call.
+     */
+    fun settleOn(tab: Tab, onSettled: () -> Unit) {
+        cancelSettle()
+        if (!this::tabParent.isInitialized || !isLaidOut) {
+            onSettled()
+            return
+        }
+        val start = scrollX
+        val target = calculateScrollXForTab(tab.position)
+        val glideMs = TabStripSnap.settleMillis(target - start, releaseVelocity)
+        var wait = glideMs
+        if (selectedTabPosition != tab.position) {
+            selectTab(tab)
+            wait = maxOf(wait, HIGHLIGHT_MS)
+        }
+        if (!ValueAnimator.areAnimatorsEnabled()) wait = 0
+        gliding = true
+        // TabLayout's own scroll to a selected tab starts from a standstill, so the strip would
+        // stop and set off again. This ends one that is running. The scroll it asks for itself
+        // is left out while gliding.
+        setScrollPosition(tab.position, 0f, false, false)
+        if (start != target) {
+            glide = ValueAnimator.ofInt(start, target).apply {
+                duration = glideMs
+                interpolator = DecelerateInterpolator()
+                addUpdateListener { super@BottomTabLayout.scrollTo(it.animatedValue as Int, 0) }
+                start()
+            }
+        }
+        settled = Runnable {
+            settled = null
+            glide?.end()
+            glide = null
+            gliding = false
+            onSettled()
+        }.also { postDelayed(it, wait) }
+    }
+
+    private fun cancelSettle() {
+        settled?.let { removeCallbacks(it) }
+        settled = null
+        glide?.cancel()
+        glide = null
+        gliding = false
+    }
+
+    override fun onDetachedFromWindow() {
+        cancelSettle()
+        super.onDetachedFromWindow()
     }
 
     override fun onLayout(changed: Boolean, l: Int, t: Int, r: Int, b: Int) {
@@ -109,8 +173,8 @@ class BottomTabLayout @JvmOverloads constructor(
         snapPoints.clear()
         snapPoints.addAll(points)
 
-        // Not under a finger either: this scroll would fight the drag.
-        if (!touching) centerSelectedTab()
+        // Not under a finger or during its glide either: this scroll would fight them.
+        if (!touching && !gliding) centerSelectedTab()
     }
 
     private fun centerSelectedTab() {
@@ -150,8 +214,21 @@ class BottomTabLayout @JvmOverloads constructor(
     // touch selects a tab up to three times in a row (the touch, the mode switch, the tab's own
     // click), and each new start would put the scroll out of step with the highlight.
     override fun selectTab(tab: Tab?, updateIndicator: Boolean) {
+        // A tab selected from elsewhere takes over from a glide to another one.
+        if (gliding) cancelSettle()
         val now = SystemClock.uptimeMillis()
         if (tab != null && tab === selectedTab && tab === centering && now - centeringSince < CENTERING_MS) return
+        // TabLayout sets a tab's label up anew when its view changes selection, which costs the
+        // whole window a layout pass, a stutter while the strip moves. The label only needs its
+        // selected state for the colour, and TabLayout leaves a view alone that has the right one.
+        if (tab != null && updateIndicator && tab.position in 0 until tabCount) {
+            for (index in 0 until tabCount) {
+                getTabAt(index)?.view?.let {
+                    it.isSelected = index == tab.position
+                    it.isActivated = index == tab.position
+                }
+            }
+        }
         super.selectTab(tab, updateIndicator)
         centering = tab?.takeIf {
             updateIndicator && !touching && this::tabParent.isInitialized &&
@@ -197,5 +274,8 @@ class BottomTabLayout @JvmOverloads constructor(
     private companion object {
         // Longer than a mode switch and the scroll after it take together.
         const val CENTERING_MS = 1000L
+
+        // How long TabLayout takes to move the highlight to a newly selected tab.
+        const val HIGHLIGHT_MS = 300L
     }
 }
