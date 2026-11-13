@@ -185,7 +185,7 @@ internal class NightCapture(private val owner: ImageCapturer, private val cancel
             val fit = rawSize?.let { NightExposurePolicy.framesThatFit(it.width, it.height) } ?: frameCount
             val count = minOf(NightExposurePolicy.frameCount(oldExposure,meteredIso,isoRange.lower,frameCount), fit)
             check(count >= 2) { "RAW frames too large for Night" }
-            context.mainExecutor.execute {owner.showProcessingEstimate(count,setting.exposureNs)}
+            context.mainExecutor.execute { progress(0, count) }
             val strides = IntArray(count)
             val calibrations = FloatArray(count * 13)
             val shadingMaps = arrayOfNulls<RawShadingData.Map>(count)

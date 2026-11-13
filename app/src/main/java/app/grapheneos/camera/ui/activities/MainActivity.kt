@@ -1211,21 +1211,16 @@ open class MainActivity : AppCompatActivity(),
         binding.processingStatus.visibility = if (visible) View.VISIBLE else View.GONE
     }
 
-    private var captureFrameExposureNs=0L
-    fun setCaptureEstimate(count: Int,exposureNs: Long) {captureFrameExposureNs=exposureNs;showProcessingStatus(0,count)}
     fun showProcessingStatus(frame: Int, count: Int) {
         binding.nightSuggestion.visibility = View.GONE
         binding.processingStatus.text = if (count > 0 && frame < count)
-            if(captureFrameExposureNs>0) getString(R.string.night_hold_still_time,frame,count,
-                kotlin.math.ceil((count-frame)*captureFrameExposureNs/1_000_000_000.0).toInt().coerceAtLeast(1))
-            else getString(R.string.night_hold_still, frame, count) else getString(R.string.taking_photo)
+            getString(R.string.night_hold_still, frame, count) else getString(R.string.taking_photo)
         binding.processingStatus.visibility = View.VISIBLE
         binding.cancelProcessing.visibility = View.VISIBLE
     }
 
     fun clearProcessingStatus() {
         if (!this::binding.isInitialized) return
-        captureFrameExposureNs=0
         binding.processingStatus.visibility = View.GONE
         binding.cancelProcessing.visibility = View.GONE
     }
@@ -1238,7 +1233,6 @@ open class MainActivity : AppCompatActivity(),
         if (videoCapturer.isRecording || imageCapturer.isProcessingCapture || camConfig.directBurstActive) {
             tabLayout.getTabForMode(camConfig.currentMode)?.let {
                 tabLayout.selectTab(it)
-                tabLayout.centerTab(it)
             }
             return
         }

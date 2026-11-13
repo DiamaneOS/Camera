@@ -64,10 +64,6 @@ class ImageCapturer(val mActivity: MainActivity) {
         if (isCurrent(capture)) mActivity.showProcessingStatus(frame, count)
     }
 
-    internal fun showProcessingEstimate(count: Int,exposureNs: Long) {
-        if(processedCapture!=null) mActivity.setCaptureEstimate(count,exposureNs)
-    }
-
     private fun fadeCaptureButton() {
         captureZoom = camConfig.displayZoom
         mActivity.captureButton.isEnabled = false
