@@ -1686,16 +1686,14 @@ class CamConfig(private val mActivity: MainActivity) {
             mActivity.startFocusTimer()
             iAnalyzer = mIAnalyzer
             mIAnalyzer.setAnalyzer(cameraExecutor, analyzer)
-            cameraSelector = CameraSelector.Builder()
-                .requireLensFacing(
-                    if (isLensFacingSupported(CameraSelector.LENS_FACING_BACK)) {
-                        CameraSelector.LENS_FACING_BACK
-                    } else {
-                        mActivity.showMessage(R.string.qr_rear_camera_unavailable)
-                        CameraSelector.LENS_FACING_FRONT
-                    }
-                )
-                .build()
+            cameraSelector = createCameraSelector(
+                if (isLensFacingSupported(CameraSelector.LENS_FACING_BACK)) {
+                    CameraSelector.LENS_FACING_BACK
+                } else {
+                    mActivity.showMessage(R.string.qr_rear_camera_unavailable)
+                    CameraSelector.LENS_FACING_FRONT
+                }
+            )
             useCasesList.add(mIAnalyzer)
 
         } else {

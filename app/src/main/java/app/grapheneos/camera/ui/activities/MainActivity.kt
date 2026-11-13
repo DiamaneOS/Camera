@@ -993,6 +993,26 @@ open class MainActivity : AppCompatActivity(),
         previewGrid.setMainActivity(this)
 
         rootView = binding.root
+        // The lens row's distance from the preview's bottom is set while a layout pass moves the
+        // preview, and a row laid out later in that pass keeps its old place. Such a pass is
+        // not drawn. The next one has the row where it belongs.
+        var passesSkipped = 0
+        rootView.viewTreeObserver.addOnPreDrawListener {
+            if (!previewFrameMoved) return@addOnPreDrawListener true
+            var settled = !placeLensControls()
+            if (!lensRowInPlace()) {
+                binding.lensControls.requestLayout()
+                settled = false
+            }
+            if (settled || passesSkipped >= 2) {
+                passesSkipped = 0
+                previewFrameMoved = false
+                true
+            } else {
+                passesSkipped++
+                false
+            }
+        }
 
         mainFrame = binding.mainFrame
 
