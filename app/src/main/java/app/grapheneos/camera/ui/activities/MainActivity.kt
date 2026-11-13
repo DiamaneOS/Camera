@@ -725,8 +725,7 @@ open class MainActivity : AppCompatActivity(),
 
         tabLayout.setOnTouchListener { _, motionEvent ->
             if (motionEvent.action == MotionEvent.ACTION_UP) {
-                val tab = tabLayout.getTabAtX(tabLayout.scrollX)
-                finalizeMode(tab)
+                finalizeMode(tabLayout.tabAtRelease())
                 return@setOnTouchListener true
             }
 
@@ -1242,8 +1241,9 @@ open class MainActivity : AppCompatActivity(),
             val mode = selectedTab.tag as CameraMode
             // The strip has to follow the touch even when the mode does not change, so do not
             // leave this to switchMode(), which returns early for the mode it is already in.
+            // Selecting a tab also scrolls it to the middle. A second scroll started here would
+            // be over by the time the mode switch lets a frame through, and the strip would jump.
             tabLayout.selectTab(selectedTab)
-            tabLayout.centerTab(selectedTab)
             camConfig.switchMode(mode)
             resetAutoSleep()
         }

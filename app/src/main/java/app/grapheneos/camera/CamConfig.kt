@@ -3078,7 +3078,6 @@ class CamConfig(private val mActivity: MainActivity) {
         if (mActivity.shouldShowCameraModeTabs()) {
             mActivity.tabLayout.getTabForMode(mode)?.let { tab ->
                 mActivity.tabLayout.selectTab(tab)
-                mActivity.tabLayout.centerTab(tab)
             }
         }
 
