@@ -82,6 +82,83 @@ android {
             buildConfigField("String","PORTRAIT_PROCESSOR_PACKAGE","\"de.diamaneos.camera.processor.dev\"")
             proguardFiles("src/debug/gpu-proguard.pro")
             resValue("string", "app_name", "Camera d")
+            if(providers.gradleProperty("cameraMinifyDebug").orNull=="true") {
+                isMinifyEnabled=true;isShrinkResources=true
+                proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"),"proguard-rules.pro")
+            }
+            providers.gradleProperty("cameraDefaultPreviewFps").orNull?.toInt()?.let {fps ->
+                require(fps in 0..60);resValue("integer","config_camera_default_preview_fps",fps.toString())
+            }
+            providers.gradleProperty("cameraPreviewNoiseReduction").orNull?.toInt()?.let {mode ->
+                require(mode in -1..4);resValue("integer","config_camera_preview_noise_reduction",mode.toString())
+            }
+            providers.gradleProperty("cameraPreviewTemporalRetention").orNull?.toInt()?.let {value ->
+                require(value in 0..80);resValue("integer","config_camera_preview_temporal_retention",value.toString())
+            }
+            providers.gradleProperty("cameraVideoPreviewLuma").orNull?.toInt()?.let {value ->
+                require(value in 0..100);resValue("integer","config_camera_video_preview_luma_denoise",value.toString())
+            }
+            providers.gradleProperty("cameraJpegHqNoiseReduction").orNull?.let {enabled ->
+                require(enabled in listOf("true","false"));resValue("bool","config_camera_jpeg_high_quality_noise_reduction",enabled)
+            }
+            providers.gradleProperty("cameraEdgeAwareDemosaic").orNull?.let {enabled ->
+                require(enabled in listOf("true","false"));resValue("bool","config_camera_edge_aware_demosaic",enabled)
+            }
+            providers.gradleProperty("cameraUltraWideSplitRawJpeg").orNull?.let {enabled ->
+                require(enabled in listOf("true","false"));resValue("bool","config_camera_ultra_wide_split_raw_jpeg",enabled)
+            }
+            providers.gradleProperty("cameraNightIspJpeg").orNull?.let {enabled ->
+                require(enabled in listOf("true","false"));resValue("bool","config_camera_night_isp_jpeg",enabled)
+            }
+            providers.gradleProperty("cameraNightFrequencyDenoise").orNull?.let {enabled ->
+                require(enabled in listOf("true","false"));resValue("bool","config_camera_night_frequency_denoise",enabled)
+            }
+            providers.gradleProperty("cameraUltraWideRawGrid").orNull?.let {profile ->
+                require(profile.length<=96 && profile.matches(Regex("[0-9]+(,[0-9]+){6}")))
+                resValue("string","config_camera_ultra_wide_raw_correction_grid",profile)
+            }
+            providers.gradleProperty("cameraUltraWideJpegDenoise").orNull?.let { enabled ->
+                require(enabled in listOf("true", "false"))
+                resValue("bool", "config_camera_ultra_wide_jpeg_denoise", enabled)
+            }
+            providers.gradleProperty("cameraUltraWideJpegExposure").orNull?.let { enabled ->
+                require(enabled in listOf("true", "false"))
+                resValue("bool", "config_camera_ultra_wide_jpeg_exposure_compensation", enabled)
+            }
+            providers.gradleProperty("cameraUltraWideBurst").orNull?.let { enabled ->
+                require(enabled in listOf("true", "false"))
+                resValue("bool", "config_camera_ultra_wide_burst", enabled)
+            }
+            providers.gradleProperty("cameraMainRawBurst").orNull?.let { enabled ->
+                require(enabled in listOf("true", "false"))
+                resValue("bool", "config_camera_main_raw_burst", enabled)
+            }
+            providers.gradleProperty("cameraDirectRawBurst").orNull?.let { enabled ->
+                require(enabled in listOf("true", "false"))
+                resValue("bool", "config_camera_direct_raw_burst", enabled)
+            }
+            providers.gradleProperty("cameraPhotoSteadyExposure").orNull?.let { enabled ->
+                require(enabled in listOf("true", "false"))
+                resValue("bool", "config_camera_photo_steady_exposure", enabled)
+            }
+            providers.gradleProperty("cameraPhysicalMain").orNull?.let { enabled ->
+                require(enabled in listOf("true", "false"))
+                resValue("bool", "config_camera_prefer_physical_main", enabled)
+            }
+            providers.gradleProperty("cameraPreviewShortEdge").orNull?.toInt()?.let { edge ->
+                require(edge in 0..2160)
+                resValue("integer", "config_camera_preview_target_short_edge", edge.toString())
+            }
+            providers.gradleProperty("cameraNightUltraWideHighlightLevel").orNull?.toInt()?.let { value ->
+                require(value in 200..255);resValue("integer","config_camera_night_ultra_wide_highlight_level",value.toString())
+            }
+            for ((property,resource) in listOf("cameraNightIspJpegMs" to "config_camera_night_isp_jpeg_max_exposure_ms",
+                "cameraNightHandheldMs" to "config_camera_night_handheld_max_exposure_ms",
+                "cameraNightSteadyMs" to "config_camera_night_steady_max_exposure_ms")) {
+                providers.gradleProperty(property).orNull?.toInt()?.let { value ->
+                    require(value in 0..1000);resValue("integer",resource,value.toString())
+                }
+            }
             // isDebuggable = false
         }
 

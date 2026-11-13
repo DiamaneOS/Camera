@@ -1923,6 +1923,38 @@ class CamConfig(private val mActivity: MainActivity) {
             }
         }
 
+        supportedPhotoOutputFormats = if (currentMode == CameraMode.CAMERA &&
+            mActivity !is CaptureActivity && !isVideoMode && rawLenses().isNotEmpty()) {
+            PhotoOutputFormat.supported(ImageCapture.getImageCaptureCapabilities(
+                cameraProvider!!.getCameraInfo(cameraSelector)).supportedOutputFormats)
+        } else listOf(PhotoOutputFormat.JPEG)
+        activePhotoOutputFormat = PhotoOutputFormat.effective(photoOutputFormat,
+            supportedPhotoOutputFormats, currentMode != CameraMode.CAMERA || isVideoMode)
+        Camera2Interop.Extender(builder).setSessionCaptureCallback(captureResults.forSession())
+        var qualifiedJpegQuality=false
+        if ((!softwareNight || softwareJpegNight) && (!softwarePhoto || softwareJpegBurst) && !isVideoMode &&
+            mActivity.resources.getBoolean(R.bool.config_camera_jpeg_high_quality_noise_reduction)) {
+            val info = Camera2CameraInfo.from(cameraProvider!!.getCameraInfo(cameraSelector))
+            // Photo bursts take FAST frames for cadence. Night frames keep HIGH_QUALITY: on some
+            // HALs FAST means no noise reduction at all, which the merge cannot make up for.
+            val mode = if (softwareJpegBurst && !softwareJpegNight) android.hardware.camera2.CaptureRequest.NOISE_REDUCTION_MODE_FAST
+                else android.hardware.camera2.CaptureRequest.NOISE_REDUCTION_MODE_HIGH_QUALITY
+            if (info.getCameraCharacteristic(CameraCharacteristics.NOISE_REDUCTION_AVAILABLE_NOISE_REDUCTION_MODES)?.contains(mode) == true) {
+                qualifiedJpegQuality=mode == android.hardware.camera2.CaptureRequest.NOISE_REDUCTION_MODE_HIGH_QUALITY
+                Camera2Interop.Extender(builder).setCaptureRequestOption(android.hardware.camera2.CaptureRequest.NOISE_REDUCTION_MODE,
+                    mode)
+            }
+        }
+        // Direct bursts acquire RAW from their own exclusive Camera2 session. Keep
+        // CameraX's framing graph JPEG in that case: CameraX rejects CameraEffect
+        // even on PREVIEW when its ImageCapture is RAW. The user's RAW/DNG output
+        // still uses the original RAW graph when no software burst is selected.
+        val cameraXRawBurst = (softwareNight || softwarePhoto) && !softwareJpegBurst &&
+            !mActivity.resources.getBoolean(R.bool.config_camera_direct_raw_burst)
+        builder.setOutputFormat(if (cameraXRawBurst) ImageCapture.OUTPUT_FORMAT_RAW
+            else if (softwareNight || softwarePhoto) ImageCapture.OUTPUT_FORMAT_JPEG
+            else PhotoOutputFormat.bindingFormat(activePhotoOutputFormat, splitsRawJpeg, splitRawPhase))
+
         val useCasesList = arrayListOf<UseCase>()
 
         val aspectRatioStrategy = AspectRatioStrategy(
