@@ -922,6 +922,26 @@ open class MainActivity : AppCompatActivity(),
         previewGrid.setMainActivity(this)
 
         rootView = binding.root
+        // The lens row's distance from the preview's bottom is set while a layout pass moves the
+        // preview, and a row laid out later in that pass keeps its old place. Such a pass is
+        // not drawn. The next one has the row where it belongs.
+        var passesSkipped = 0
+        rootView.viewTreeObserver.addOnPreDrawListener {
+            if (!previewFrameMoved) return@addOnPreDrawListener true
+            var settled = !placeLensControls()
+            if (!lensRowInPlace()) {
+                binding.lensControls.requestLayout()
+                settled = false
+            }
+            if (settled || passesSkipped >= 2) {
+                passesSkipped = 0
+                previewFrameMoved = false
+                true
+            } else {
+                passesSkipped++
+                false
+            }
+        }
 
         mainFrame = binding.mainFrame
         rootView.addOnLayoutChangeListener { _, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom ->
@@ -1068,6 +1088,7 @@ open class MainActivity : AppCompatActivity(),
     // tall even for that keeps the fit above the controls.
     fun fitPreviewFrame() {
         if (!this::mainFrame.isInitialized || rootView.width == 0 || threeButtons.height == 0) return
+        previewFrameMoved = true
         val gap = resources.getDimensionPixelSize(R.dimen.preview_controls_gap)
         val preview = previewView.layoutParams as ConstraintLayout.LayoutParams
         val tabsTop = tabLayout.top - (tabLayout.layoutParams as ViewGroup.MarginLayoutParams).topMargin
@@ -1099,35 +1120,58 @@ open class MainActivity : AppCompatActivity(),
         ViewCompat.setStateDescription(captureButton, if (blocked) getString(R.string.camera_access_off) else null)
     }
 
+    // The preview frame may have changed since the last drawn pass.
+    private var previewFrameMoved = false
+
+    /** Whether the lens row stands where its margin puts it. */
+    private fun lensRowInPlace(): Boolean {
+        val row = binding.lensControls
+        if (row.visibility != View.VISIBLE || row.height <= 0 || previewView.height <= 0) return true
+        val previewPosition = IntArray(2)
+        val rowPosition = IntArray(2)
+        previewView.getLocationInWindow(previewPosition)
+        row.getLocationInWindow(rowPosition)
+        val margin = (row.layoutParams as ViewGroup.MarginLayoutParams).bottomMargin
+        return rowPosition[1] + row.height == previewPosition[1] + previewView.height - margin
+    }
+
+    /** Puts the lens row and the hint above it at their distance from the arrow. True if one moved. */
+    private fun placeLensControls(): Boolean {
+        if (!this::settingsIcon.isInitialized || !this::threeButtons.isInitialized ||
+            previewView.height <= 0 || threeButtons.height <= 0) return false
+        var moved = false
+        val density = resources.displayMetrics.density
+        val previewPosition=IntArray(2);val settingsPosition=IntArray(2);val controlsPosition=IntArray(2)
+        previewView.getLocationInWindow(previewPosition);threeButtons.getLocationInWindow(controlsPosition)
+        // The arrow is gone until the camera is bound and while it's blocked. A filled preview
+        // reaches behind the capture row, so the row then keeps clear of the arrow's place.
+        val arrowTop = if (settingsIcon.visibility != View.GONE && settingsIcon.height > 0) {
+            settingsIcon.getLocationInWindow(settingsPosition); settingsPosition[1]
+        } else null
+        // Four dp of visual inset inside each circular touch target leaves
+        // a twelve-dp visible gap above the settings arrow.
+        val margin = app.grapheneos.camera.ui.LensPlacement.bottomMargin(previewPosition[1] + previewView.height, arrowTop,
+            controlsPosition[1], ((32 + 48) * density).toInt(), (8 * density).toInt())
+        val params=binding.lensControls.layoutParams as android.view.ViewGroup.MarginLayoutParams
+        if(params.bottomMargin!=margin) {params.bottomMargin=margin;binding.lensControls.layoutParams=params;moved=true}
+        val lensHeight = if (binding.lensControls.visibility == View.VISIBLE)
+            maxOf(binding.lensControls.height, (48 * resources.displayMetrics.density).toInt()) else 0
+        val controls = binding.computationalControls.layoutParams as android.view.ViewGroup.MarginLayoutParams
+        val controlsMargin = margin + lensHeight + (16 * resources.displayMetrics.density).toInt()
+        if (controls.bottomMargin != controlsMargin) {
+            controls.bottomMargin = controlsMargin
+            binding.computationalControls.layoutParams = controls
+            moved = true
+        }
+        return moved
+    }
+
     fun updateLensControls() {
         if (!this::binding.isInitialized || !this::camConfig.isInitialized) return
         val choices = camConfig.zoomPresets()
         binding.lensControls.visibility = if (choices.size > 1 &&
             (!this::settingsDialog.isInitialized || !settingsDialog.isShowing)) View.VISIBLE else View.GONE
-        if(this::settingsIcon.isInitialized && this::threeButtons.isInitialized && previewView.height>0 && threeButtons.height>0) {
-            val density = resources.displayMetrics.density
-            val previewPosition=IntArray(2);val settingsPosition=IntArray(2);val controlsPosition=IntArray(2)
-            previewView.getLocationInWindow(previewPosition);threeButtons.getLocationInWindow(controlsPosition)
-            // The arrow is gone until the camera is bound and while it's blocked. A filled preview
-            // reaches behind the capture row, so the row then keeps clear of the arrow's place.
-            val arrowTop = if (settingsIcon.visibility != View.GONE && settingsIcon.height > 0) {
-                settingsIcon.getLocationInWindow(settingsPosition); settingsPosition[1]
-            } else null
-            // Four dp of visual inset inside each circular touch target leaves
-            // a twelve-dp visible gap above the settings arrow.
-            val margin = app.grapheneos.camera.ui.LensPlacement.bottomMargin(previewPosition[1] + previewView.height, arrowTop,
-                controlsPosition[1], ((32 + 48) * density).toInt(), (8 * density).toInt())
-            val params=binding.lensControls.layoutParams as android.view.ViewGroup.MarginLayoutParams
-            if(params.bottomMargin!=margin) {params.bottomMargin=margin;binding.lensControls.layoutParams=params}
-            val lensHeight = if (binding.lensControls.visibility == View.VISIBLE)
-                maxOf(binding.lensControls.height, (48 * resources.displayMetrics.density).toInt()) else 0
-            val controls = binding.computationalControls.layoutParams as android.view.ViewGroup.MarginLayoutParams
-            val controlsMargin = margin + lensHeight + (16 * resources.displayMetrics.density).toInt()
-            if (controls.bottomMargin != controlsMargin) {
-                controls.bottomMargin = controlsMargin
-                binding.computationalControls.layoutParams = controls
-            }
-        }
+        placeLensControls()
         val actual = zoomBar.gestureZoom ?: camConfig.displayZoom
         val selected = when {
             actual < 1f -> choices.firstOrNull {it<1f}

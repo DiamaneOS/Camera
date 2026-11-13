@@ -165,7 +165,7 @@
 
                 <ImageView
                     android:id="@+id/main_overlay"
-                    android:scaleType="fitStart"
+                    android:scaleType="centerCrop"
                     android:layout_width="0dp"
                     android:layout_height="0dp"
                     android:contentDescription="@string/loading_camera"
