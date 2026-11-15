@@ -1,3 +1,6 @@
 <full-backup-content>
     <exclude domain="sharedpref"/>
+    <exclude domain="file" path="photo-processing/"/>
+    <exclude domain="file" path="processing-test/"/>
+    <exclude domain="file" path="portrait-originals/"/>
 </full-backup-content>

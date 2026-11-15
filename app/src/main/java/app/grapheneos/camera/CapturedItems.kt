@@ -33,11 +33,14 @@ const val VIDEO_NAME_PREFIX = "VID_"
 class CapturedItem(
     val type: ItemType,
     val dateString: String,
-    val uri: Uri
+    val uri: Uri,
+    val isRaw: Boolean = false,
+    val pendingFailed: Boolean = false,
 ): Parcelable {
+    val processingId: String? get() = if (uri.scheme == app.grapheneos.camera.capturer.PhotoProcessingQueue.URI_SCHEME) uri.authority else null
     fun mimeType(): String {
         return if (type == ITEM_TYPE_IMAGE) {
-            "image/*"
+            if (isRaw) "image/x-adobe-dng" else "image/*"
         } else {
             check(type == ITEM_TYPE_VIDEO)
             "video/*"
@@ -50,7 +53,7 @@ class CapturedItem(
             VIDEO_NAME_PREFIX
         }
 
-        return "$prefix$dateString"
+        return "$prefix$dateString" + if (isRaw) ".dng" else ""
     }
 
     /**
@@ -80,17 +83,19 @@ class CapturedItem(
         dest.writeByte(type.toByte())
         dest.writeString(dateString)
         uri.writeToParcel(dest, 0)
+        dest.writeInt(if (isRaw) 1 else 0)
+        dest.writeInt(if (pendingFailed) 1 else 0)
     }
 
     override fun hashCode(): Int {
-        return dateString.hashCode()
+        return 31 * (31 * dateString.hashCode() + type) + if (isRaw) 1 else 0
     }
 
     override fun equals(other: Any?): Boolean {
         if (other !is CapturedItem) {
             return false
         }
-        return dateString == other.dateString
+        return dateString == other.dateString && type == other.type && isRaw == other.isRaw
     }
 
     companion object {
@@ -101,7 +106,7 @@ class CapturedItem(
                 val type = source.readByte().toInt()
                 val dateString = source.readString()!!
                 val uri = Uri.CREATOR.createFromParcel(source)
-                return CapturedItem(type, dateString, uri)
+                return CapturedItem(type, dateString, uri, source.readInt() != 0, source.readInt() != 0)
             }
 
             override fun newArray(size: Int) = arrayOfNulls<CapturedItem>(size)
@@ -117,6 +122,7 @@ class CapturedItem(
 // show, or null on success
 @StringRes
 internal fun shareCapturedItem(activity: Activity, item: CapturedItem): Int? {
+    if (item.processingId != null) return R.string.photo_not_ready
     val intent = Intent(Intent.ACTION_SEND).apply {
         putExtra(Intent.EXTRA_STREAM, item.uri)
         setDataAndType(item.uri, item.mimeType())
@@ -137,6 +143,7 @@ internal fun shareCapturedItem(activity: Activity, item: CapturedItem): Int? {
 // when the item is no longer accessible. Returns the error message to show, or null on success
 @StringRes
 internal fun editCapturedItem(activity: Activity, item: CapturedItem, useDefaultEditor: Boolean): Int? {
+    if (item.processingId != null) return R.string.photo_not_ready
     val intent = Intent(Intent.ACTION_EDIT).apply {
         setDataAndType(item.uri, item.mimeType())
         putExtra(Intent.EXTRA_STREAM, item.uri)
@@ -272,6 +279,7 @@ object CapturedItems {
 
     @Throws(InterruptedException::class)
     fun list(ctx: Context): CapturedItemsListing {
+        val snapshot = PhotoScanSnapshot(app.grapheneos.camera.capturer.PhotoProcessingQueue.pendingItems())
         val resolver = ctx.contentResolver
         val list = ArrayList<CapturedItem>()
 
@@ -289,7 +297,10 @@ object CapturedItems {
             }
         }
 
-        return CapturedItemsListing(list, listedMediaStore, unlistedTrees)
+        // DiamaneOS: queued photos, and those that finished while the providers were listed.
+        val pending = snapshot.complete(emptyList(), app.grapheneos.camera.capturer.PhotoProcessingQueue.pendingItems(),
+            app.grapheneos.camera.capturer.PhotoProcessingQueue::resolve)
+        return CapturedItemsListing(list + pending, listedMediaStore, unlistedTrees)
     }
 
     /**
@@ -297,16 +308,23 @@ object CapturedItems {
      * say, which only a listing tells apart from it being gone.
      */
     fun isPresent(ctx: Context, item: CapturedItem): Boolean {
+        // DiamaneOS: a queued photo is there while the queue still has it.
+        if (item.processingId != null) {
+            return app.grapheneos.camera.capturer.PhotoProcessingQueue.resolve(item) != null
+        }
         val uri = item.uri
         val idColumn = if (uri.authority == MediaStore.AUTHORITY) {
             BaseColumns._ID
         } else {
             DocumentsContract.Document.COLUMN_DOCUMENT_ID
         }
+        // DiamaneOS: a query by an item's own uri still returns it from the trash.
+        val trash = uri.authority == MediaStore.AUTHORITY && android.os.Build.VERSION.SDK_INT >= 30
+        val projection = if (trash) arrayOf(idColumn, MediaStore.MediaColumns.IS_TRASHED) else arrayOf(idColumn)
 
         return try {
-            ctx.contentResolver.query(uri, arrayOf(idColumn), null, null)?.use {
-                it.count > 0
+            ctx.contentResolver.query(uri, projection, null, null)?.use {
+                it.moveToFirst() && (!trash || it.getInt(1) == 0)
             } ?: false
         } catch (e: Exception) {
             Log.d(TAG, "unable to look up ${item.uiName()}", e)
@@ -544,6 +562,6 @@ object CapturedItems {
         }
 
         val dateString = fileName.substring(prefixLen, end)
-        return CapturedItem(type, dateString, uri)
+        return CapturedItem(type, dateString, uri, fileName.substring(end).equals(".dng", ignoreCase = true))
     }
 }

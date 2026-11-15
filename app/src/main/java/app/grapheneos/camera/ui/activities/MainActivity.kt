@@ -11,6 +11,7 @@ import android.content.DialogInterface
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.Configuration
+import android.database.ContentObserver
 import android.graphics.Bitmap
 import android.graphics.ImageDecoder
 import android.graphics.Point
@@ -24,6 +25,7 @@ import android.os.Looper
 import android.os.SystemClock
 import android.os.VibrationEffect
 import android.os.Vibrator
+import android.provider.MediaStore
 import android.provider.Settings
 import android.text.util.Linkify
 import android.util.Log
@@ -38,7 +40,6 @@ import android.view.SurfaceView
 import android.view.View
 import android.view.View.OnTouchListener
 import android.view.ViewGroup
-import android.view.ViewTreeObserver
 import android.view.animation.Animation
 import android.view.animation.LinearInterpolator
 import android.view.animation.RotateAnimation
@@ -73,8 +74,12 @@ import androidx.core.view.updateMargins
 import app.grapheneos.camera.App
 import app.grapheneos.camera.CapturedItem
 import app.grapheneos.camera.CapturedItems
+import app.grapheneos.camera.CamConfig
+import app.grapheneos.camera.CameraMode
 import app.grapheneos.camera.ITEM_TYPE_IMAGE
 import app.grapheneos.camera.ITEM_TYPE_VIDEO
+import app.grapheneos.camera.ThumbnailChoice
+import app.grapheneos.camera.ThumbnailSelection
 import app.grapheneos.camera.R
 import app.grapheneos.camera.capturer.ImageCapturer
 import app.grapheneos.camera.capturer.VideoCapturer
@@ -653,6 +658,7 @@ open class MainActivity : AppCompatActivity(),
 
     private fun openGallery() {
         check(this !is CaptureActivity)
+        if (app.grapheneos.camera.ui.GalleryHandoff.open(this)) return // DiamaneOS: the system gallery
 
         Intent(this, InAppGallery::class.java).let {
             if (this is SecureMainActivity) {
@@ -817,21 +823,12 @@ open class MainActivity : AppCompatActivity(),
         if (this !is SecureActivity) app.grapheneos.camera.capturer.PhotoProcessingQueue.applyPendingStorageReset()
         refreshProcessingThumbnail()
         updateThumbnail()
+        scheduleThumbnailCheck()
 
         if (camConfig.requireLocation) {
             requestLocation()
         }
 
-        // If the preview of video capture activity isn't showing
-        if (!(this is VideoCaptureActivity && thirdOption.isVisible)) {
-            if (!isQRDialogShowing) {
-                if (hasCameraPermission()) {
-                    camConfig.initializeCamera(true)
-                } else {
-                    Log.i(TAG, "Leaving the camera uninitialized until the permission is granted.")
-                }
-            }
-        }
     }
 
     val requiresVideoModeOnly: Boolean
@@ -2276,10 +2273,39 @@ open class MainActivity : AppCompatActivity(),
     override fun onStart() {
         super.onStart()
         isStarted = true
+        camConfig.resetBlockRecovery()
+        getSystemService(AppOpsManager::class.java)?.apply {
+            startWatchingMode(AppOpsManager.OPSTR_CAMERA, packageName, cameraAccessListener)
+            startWatchingMode(AppOpsManager.OPSTR_RECORD_AUDIO, packageName, microphoneAccessListener)
+        }
+        if (this !is CaptureActivity) {
+            for (uri in listOf(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, MediaStore.Video.Media.EXTERNAL_CONTENT_URI)) {
+                contentResolver.registerContentObserver(uri, true, mediaObserver)
+            }
+        }
+        if (!observingPhotoQueue) {
+            observingPhotoQueue = true
+            app.grapheneos.camera.capturer.PhotoProcessingQueue.changes.observe(this) { refreshProcessingThumbnail() }
+        }
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        // Split screen, a pop-up window or the shade can hide a delete from onResume.
+        if (hasFocus && SystemClock.uptimeMillis() - lastThumbnailCheck > 1000) scheduleThumbnailCheck()
     }
 
     override fun onStop() {
         isStarted = false
+        getSystemService(AppOpsManager::class.java)?.apply {
+            stopWatchingMode(cameraAccessListener)
+            stopWatchingMode(microphoneAccessListener)
+        }
+        contentResolver.unregisterContentObserver(mediaObserver)
+        handler.removeCallbacks(thumbnailCheck)
+        handler.removeCallbacks(previewWatchdog)
+        processingCaptureAfterPermission = false
+        resumeRebind.onStop()
         // Stop explicitly rather than letting the unbind tear the recording down for us.
         if (this::videoCapturer.isInitialized && videoCapturer.isRecording) {
             updateLastFrame()
@@ -2306,6 +2332,8 @@ open class MainActivity : AppCompatActivity(),
     }
 
     fun updateThumbnail() {
+        // DiamaneOS: a later update or check makes the result of this one stale.
+        val generation = ++thumbnailGeneration
         val item = camConfig.lastCapturedItem
         val preview = imagePreview
         isThumbnailLoaded = false
@@ -2319,6 +2347,8 @@ open class MainActivity : AppCompatActivity(),
         }
 
         if (item == null) {
+            // DiamaneOS: a capture made elsewhere since can take the empty button.
+            scheduleThumbnailCheck(0)
             return
         }
 
@@ -2334,6 +2364,11 @@ open class MainActivity : AppCompatActivity(),
         }
 
         thumbnailLoaderExecutor.executeIfAlive {
+            // DiamaneOS: a queued photo keeps what the button shows until its preview file is there.
+            if (item.processingId != null &&
+                app.grapheneos.camera.capturer.PhotoProcessingQueue.previewFile(item) == null) {
+                return@executeIfAlive
+            }
             var shown: CapturedItem? = item
             var replaced = false
             var bitmap = loadThumbnail(ctx, item, side)
@@ -2361,13 +2396,84 @@ open class MainActivity : AppCompatActivity(),
             }
 
             mainExecutor.execute {
-                if (isStarted && camConfig.lastCapturedItem == item) {
+                if (generation == thumbnailGeneration && isStarted && camConfig.lastCapturedItem == item) {
                     if (replaced) {
                         val seesEveryItem = sessionFiles == null && !videosOnly && listedEverywhere
                         camConfig.replaceLastCapturedItem(shown, save = seesEveryItem)
                     }
                     showThumbnail(shown, bitmap)
                     isThumbnailLoaded = bitmap != null
+                }
+            }
+        }
+    }
+
+    private val thumbnailCheck = Runnable { checkThumbnail() }
+
+    private val mediaObserver = object : ContentObserver(handler) {
+        override fun onChange(selfChange: Boolean) = scheduleThumbnailCheck(500)
+    }
+
+    // Android's camera block changes the camera app op. Called on a binder thread.
+    private val cameraAccessListener = AppOpsManager.OnOpChangedListener { _, _ ->
+        handler.post { if (isStarted) camConfig.onCameraAccessChanged() }
+    }
+
+    // Android's microphone block changes the record audio app op. Called on a binder thread.
+    private val microphoneAccessListener = AppOpsManager.OnOpChangedListener { _, _ ->
+        handler.post { if (isStarted) camConfig.onMicrophoneAccessChanged() }
+    }
+
+    private val captureInProgress get() = imageCapturer.isTakingPicture || videoCapturer.isRecording
+    private var lastThumbnailCheck = 0L
+
+    // Coalesces the resume, focus and MediaStore triggers into one scan.
+    private fun scheduleThumbnailCheck(delayMs: Long = 200) {
+        handler.removeCallbacks(thumbnailCheck)
+        if (isStarted) handler.postDelayed(thumbnailCheck, delayMs)
+    }
+
+    // Puts the newest capture of this app that still exists on the gallery button, or the empty
+    // state if none is left, so a capture deleted or trashed in another app does not stay behind.
+    // The button is touched only on a change.
+    private fun checkThumbnail() {
+        if (this is CaptureActivity || !isStarted) return
+        val current = camConfig.lastCapturedItem
+        // The processing queue keeps a photo in processing up to date (refreshProcessingThumbnail).
+        // A capture in progress ends by showing itself.
+        if (current?.processingId != null || captureInProgress) return
+        lastThumbnailCheck = SystemClock.uptimeMillis()
+        val generation = thumbnailGeneration
+        // A lock screen session must not uncover captures from outside it.
+        val session = if (this is SecureMainActivity && getSystemService(android.app.KeyguardManager::class.java).isKeyguardLocked)
+            capturedItems.toList() else null
+        val videoOnly = requiresVideoModeOnly
+        // A filtered view keeps its choice in memory so the saved last capture stays the true newest.
+        val save = !videoOnly && session == null
+        thumbnailLoaderExecutor.executeIfAlive {
+            val gone = session?.filterNot { CapturedItems.isPresent(this, it) }.orEmpty()
+            val found = session?.minus(gone.toSet())
+                ?: try { CapturedItems.get(this) } catch (_: InterruptedException) { return@executeIfAlive }
+            val existing = found.mapNotNull(app.grapheneos.camera.capturer.PhotoProcessingQueue::resolve)
+                .filter { !videoOnly || it.type == ITEM_TYPE_VIDEO }
+            val choice = ThumbnailSelection.choose(current, existing) { it.dateString }
+            mainExecutor.execute {
+                if (isDestroyed) return@execute
+                if (this is SecureMainActivity) ThumbnailSelection.pruneGone(capturedItems, gone)
+                if (!isStarted || generation != thumbnailGeneration || captureInProgress ||
+                    camConfig.lastCapturedItem?.uri != current?.uri) return@execute
+                when (choice) {
+                    ThumbnailChoice.Keep -> {}
+                    is ThumbnailChoice.Show -> {
+                        if (save) camConfig.replaceLastCapturedItem(choice.item) else camConfig.lastCapturedItem = choice.item
+                        updateThumbnail()
+                    }
+                    ThumbnailChoice.Empty -> {
+                        if (save) camConfig.replaceLastCapturedItem(null) else camConfig.lastCapturedItem = null
+                        thumbnailGeneration++
+                        showThumbnail(null, null)
+                        isThumbnailLoaded = false
+                    }
                 }
             }
         }
@@ -2385,6 +2491,14 @@ open class MainActivity : AppCompatActivity(),
                 origBitmap.recycle()
                 return bitmap
             } else if (item.type == ITEM_TYPE_IMAGE) {
+                // DiamaneOS: a queued photo shows its preview file, and a DNG its embedded preview.
+                if (item.processingId != null) {
+                    val file = app.grapheneos.camera.capturer.PhotoProcessingQueue.previewFile(item) ?: return null
+                    return ImageDecoder.decodeBitmap(ImageDecoder.createSource(file), ImageResizer(side, side))
+                }
+                if (item.isRaw) {
+                    return app.grapheneos.camera.util.DngPreview.thumbnail(ctx, item.uri, side, side)
+                }
                 val source = ImageDecoder.createSource(ctx.contentResolver, item.uri)
                 return ImageDecoder.decodeBitmap(source, ImageResizer(side, side))
             }

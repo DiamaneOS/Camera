@@ -85,6 +85,11 @@ class App : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        // Every isolated worker must skip app-private queue, location and UI setup,
+        // independently of its manifest process name or app-zygote suffix.
+        if (android.os.Process.isIsolated()) return
+        if (BuildConfig.DEBUG) StartupDiagnostics.startIfRequested(this)
+        app.grapheneos.camera.capturer.PhotoProcessingQueue.initialize(this)
         registerActivityLifecycleCallbacks(activityLifeCycleHelper)
         DynamicColors.applyToActivitiesIfAvailable(this)
 

@@ -68,9 +68,9 @@ class ImageSaver(
     val removeExifAfterCapture: Boolean,
     @Px val targetThumbnailWidth: Int,
     @Px val targetThumbnailHeight: Int,
+    val captureTime: Date = Date(),
 ) : ImageCapture.OnImageCapturedCallback()
 {
-    val captureTime = Date()
     val contentResolver = appContext.contentResolver
     val mainThreadExecutor = appContext.mainExecutor
 
@@ -153,7 +153,7 @@ class ImageSaver(
         } catch (e: ImageSaverException) {
             handleError(e)
             return
-        }
+        } finally { onFinished?.invoke() }
 
         imageCapturer.mActivity.thumbnailLoaderExecutor.executeIfAlive { generateThumbnail(item) }
     }
