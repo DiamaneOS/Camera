@@ -98,6 +98,19 @@ class ImageSaver(
         imageWriterExecutor.execute(this::saveImage)
     }
 
+
+    private var onFinished: (() -> Unit)? = null
+
+    fun saveEncodedJpeg(bytes: ByteArray, rotationDegrees: Int, finished: (() -> Unit)? = null) {
+        require(bytes.isNotEmpty() && bytes.size <= 64 * 1024 * 1024) // DiamaneOS: 50 MP photos run past 20 MB
+        onFinished = finished
+        origJpegBytes = withoutTrailingPadding(bytes)
+        orientation = rotationDegrees
+        shouldUseExifOrientation = false
+        mainThreadExecutor.execute(imageCapturer::onCaptureSuccess)
+        imageWriterExecutor.execute(this::saveImage)
+    }
+
     // based on androidx.camera.core.ImageSaver#imageToJpegByteArray(),
     // optimized to avoid extracting uncropped image twice and to close ImageProxy sooner
     @SuppressLint("RestrictedApi")

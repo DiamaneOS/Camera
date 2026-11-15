@@ -149,6 +149,52 @@ class ImageCapturer(val mActivity: MainActivity) {
 
         val imageCapture = camConfig.imageCapture!!
 
+        if (camConfig.usesProcessingCapture) {
+            // Snapshot routing and frame count once, before reserving or handing
+            // ownership to the asynchronous acquisition.
+            val jpegBurst = camConfig.softwareJpegBurst
+            val frames = if (jpegBurst) {
+                if (camConfig.softwareJpegNight || camConfig.prioritizeCaptureQuality) 4 else 2
+            } else camConfig.processingFrameCount
+            val bytes = if (jpegBurst) frames*32L*1024*1024 + 1024*1024 else
+                if (camConfig.softwarePortrait || camConfig.softwareFastPhoto) 21L * 1024 * 1024 else
+                minOf(240L * 1024 * 1024, frames * 32L * 1024 * 1024) + 1024 * 1024 + RawShadingData.MAX_BYTES
+            val reservation = PhotoProcessingQueue.reserve(bytes)
+            if (reservation == null) { mActivity.showMessage(when {
+                PhotoProcessingQueue.isRecovering -> R.string.camera_preparing
+                PhotoProcessingQueue.lacksStorage(bytes) -> R.string.photo_storage_unavailable
+                else -> R.string.photo_queue_full
+            }); return }
+            val capture = ProcessedCapture(this, imageMetadata, reservation, frames, jpegBurst)
+            processedCapture = capture
+            fadeCaptureButton()
+            mActivity.showProcessingStatus(0, frames)
+            try { capture.start() }
+            catch (error: Exception) {
+                PhotoProcessingQueue.release(reservation)
+                onCaptureError(ImageCaptureException(ImageCapture.ERROR_CAPTURE_FAILED, "Photo acquisition failed", error))
+            }
+            return
+        }
+
+        if (camConfig.activePhotoOutputFormat != PhotoOutputFormat.JPEG) {
+            val capture = RawFileCapture(this, camConfig.activePhotoOutputFormat, imageMetadata, camConfig.splitsRawJpeg)
+            rawFileCapture = capture
+            fadeCaptureButton()
+            capture.start(imageCapture)
+            return
+        }
+
+        // DiamaneOS: the full sensor resolution, when chosen, at 1x and without flash.
+        val full = camConfig.fullResolutionStill()
+        val chosen = if (camConfig.canSelectPhotoResolution) camConfig.photoResolution else null
+        if (full != null && chosen != null && chosen.width == full.second.width && chosen.height == full.second.height &&
+            camConfig.flashMode == ImageCapture.FLASH_MODE_OFF &&
+            kotlin.math.abs((camConfig.zoomState?.zoomRatio ?: 1f) - 1f) < 0.01f) {
+            takeFullResolution(full.first, full.second, imageMetadata, preview.width, preview.height)
+            return
+        }
+
         val imageSaver = ImageSaver(
             this,
             mActivity.applicationContext,
@@ -165,6 +211,95 @@ class ImageCapturer(val mActivity: MainActivity) {
 
         imageCapture.takePicture(ImageSaver.imageCaptureCallbackExecutor, imageSaver)
         fadeCaptureButton()
+    }
+
+    // DiamaneOS: one photo at the sensor's full resolution through MaxResolutionStill, saved like any other.
+    private fun takeFullResolution(id: String, size: android.util.Size, imageMetadata: ImageCapture.Metadata,
+                                   thumbnailWidth: Int, thumbnailHeight: Int) {
+        val rotation = camConfig.camera?.cameraInfo?.getSensorRotationDegrees(
+            camConfig.imageCapture?.targetRotation ?: Surface.ROTATION_0) ?: 0
+        val quality = camConfig.photoQuality
+        val imageSaver = ImageSaver(this, mActivity.applicationContext, quality, camConfig.storageLocation,
+            imageFileFormat, imageMetadata, camConfig.removeExifAfterCapture,
+            targetThumbnailWidth = thumbnailWidth, targetThumbnailHeight = thumbnailHeight)
+        currentImageSaver = imageSaver
+        fadeCaptureButton()
+        val still = MaxResolutionStill(this, id, size)
+        MaxResolutionStill.worker.execute {
+            try {
+                imageSaver.saveEncodedJpeg(still.capture(quality), rotation)
+            } catch (exception: Exception) {
+                imageSaver.onError(ImageCaptureException(ImageCapture.ERROR_CAPTURE_FAILED, "Full-resolution photo failed", exception))
+            }
+        }
+    }
+
+    // The frame comes from the preview buffer itself, not from the window or the view: the window
+    // would add the controls, and the view is cropped and scaled to the screen. PixelCopy reads the
+    // last buffer the camera queued on the render thread, and the encoding runs on its own thread.
+    private fun copyPreviewFrame(imageMetadata: ImageCapture.Metadata, thumbnailWidth: Int, thumbnailHeight: Int) {
+        val previewView = mActivity.previewView
+        val surface = (0 until previewView.childCount).map { previewView.getChildAt(it) }
+            .filterIsInstance<SurfaceView>().firstOrNull()?.holder?.surface?.takeIf { it.isValid }
+        val buffer = camConfig.preview?.resolutionInfo?.resolution
+        val sensorOrientation = camConfig.camera?.cameraInfo?.sensorRotationDegrees
+        if (surface == null || buffer == null || sensorOrientation == null) {
+            onCaptureError(ImageCaptureException(ImageCapture.ERROR_CAPTURE_FAILED, "No preview frame to copy", null))
+            return
+        }
+        if (!previewCopies.tryStart()) return
+
+        imageMetadata.isReversedHorizontal = PreviewSnapshot.mirror(
+            camConfig.lensFacing == CameraSelector.LENS_FACING_FRONT, camConfig.saveImageAsPreviewed)
+        // The capture use cases follow the phone, also while recording.
+        val rotation = PreviewSnapshot.rotationDegrees(camConfig.videoCapture?.targetRotation ?: Surface.ROTATION_0)
+        val quality = camConfig.photoQuality
+        val imageSaver = ImageSaver(
+            this,
+            mActivity.applicationContext,
+            quality,
+            camConfig.storageLocation,
+            imageFileFormat,
+            imageMetadata,
+            camConfig.removeExifAfterCapture,
+            targetThumbnailWidth = thumbnailWidth,
+            targetThumbnailHeight = thumbnailHeight,
+        )
+        currentImageSaver = imageSaver
+        fadeCaptureButton()
+
+        val (width, height) = PreviewSnapshot.copySize(buffer.width, buffer.height, sensorOrientation)
+        val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        fun fail(reason: String, cause: Throwable?) {
+            bitmap.recycle()
+            previewCopies.finish()
+            imageSaver.onError(ImageCaptureException(ImageCapture.ERROR_CAPTURE_FAILED, reason, cause))
+        }
+        try {
+            PixelCopy.request(surface, bitmap, { result ->
+                if (result != PixelCopy.SUCCESS) {
+                    fail("Preview frame copy failed: $result", null)
+                    return@request
+                }
+                val jpeg = ByteArrayOutputStream(2 * 1024 * 1024)
+                val encoded = try {
+                    bitmap.compress(Bitmap.CompressFormat.JPEG, quality, jpeg)
+                } catch (exception: RuntimeException) {
+                    fail("Preview frame encoding failed", exception)
+                    return@request
+                }
+                if (!encoded) {
+                    fail("Preview frame encoding failed", null)
+                    return@request
+                }
+                bitmap.recycle()
+                previewCopies.finish()
+                imageSaver.saveEncodedJpeg(jpeg.toByteArray(), rotation)
+            }, previewCopyHandler)
+        } catch (exception: IllegalArgumentException) {
+            // The preview surface went away between the check and the request.
+            fail("Preview frame copy failed", exception)
+        }
     }
 
     fun cancelPendingCaptureRequest() {
