@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- DiamaneOS: from Android 14 the lamp is the fixed primary role, as Tally's tally_lamp (one colour in light and dark). -->
+<resources>
+    <color name="tally_lamp">@android:color/system_primary_fixed_dim</color>
+    <color name="tally_on_lamp">@android:color/system_on_primary_fixed</color>
+</resources>

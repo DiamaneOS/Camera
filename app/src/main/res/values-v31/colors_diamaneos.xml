@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- DiamaneOS: from Android 12 the colours come from the system palette (on DiamaneOS the Tally palette). -->
+<resources>
+    <color name="tally_lamp">@android:color/system_accent1_200</color>
+    <color name="tally_on_lamp">@android:color/system_accent1_800</color>
+
+    <!-- values/colors.xml holds fixed copies of these system colours (Google's blue-grey defaults),
+         used by the shutter and the QR torch key. Here they are the system's own. -->
+    <color name="system_accent1_100">@android:color/system_accent1_100</color>
+    <color name="system_neutral1_100">@android:color/system_neutral1_100</color>
+    <color name="system_neutral1_900">@android:color/system_neutral1_900</color>
+    <color name="unselected_option_bg">@android:color/system_neutral1_800</color>
+</resources>

@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- DiamaneOS: the chosen menu entry carries a lit lamp (a 10 dp disc), the others nothing. A row is
+     checked (CheckedTextView rows) or activated (plain TextView rows of AppCompat spinners). -->
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:state_checked="true">
+        <layer-list>
+            <item
+                android:width="24dp"
+                android:height="24dp">
+                <shape android:shape="rectangle">
+                    <solid android:color="@android:color/transparent" />
+                </shape>
+            </item>
+            <item
+                android:width="10dp"
+                android:height="10dp"
+                android:gravity="center">
+                <shape android:shape="oval">
+                    <solid android:color="@color/tally_lamp" />
+                </shape>
+            </item>
+        </layer-list>
+    </item>
+    <item android:state_activated="true">
+        <layer-list>
+            <item
+                android:width="24dp"
+                android:height="24dp">
+                <shape android:shape="rectangle">
+                    <solid android:color="@android:color/transparent" />
+                </shape>
+            </item>
+            <item
+                android:width="10dp"
+                android:height="10dp"
+                android:gravity="center">
+                <shape android:shape="oval">
+                    <solid android:color="@color/tally_lamp" />
+                </shape>
+            </item>
+        </layer-list>
+    </item>
+    <item>
+        <shape android:shape="rectangle">
+            <size
+                android:width="24dp"
+                android:height="24dp" />
+            <solid android:color="@android:color/transparent" />
+        </shape>
+    </item>
+</selector>

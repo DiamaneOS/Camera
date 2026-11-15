@@ -1,4 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- DiamaneOS: a button among the barcode format toggles, so it looks like the camera's other round
+     buttons (a white ring on the controls' scrim) and never like a chosen format. -->
 <layer-list
     xmlns:android="http://schemas.android.com/apk/res/android">
 
@@ -7,7 +9,11 @@
     <shape
         android:shape="oval">
 
-      <solid android:color="#fff"/>
+      <solid android:color="@color/camera_control_scrim"/>
+
+      <stroke
+          android:width="2dp"
+          android:color="@android:color/white"/>
 
       <padding
           android:bottom="2dp"
@@ -20,6 +26,6 @@
   </item>
 
   <item
-      android:drawable="@drawable/more_options_raw"/>
+      android:drawable="@drawable/tally_more_dots"/>
 
 </layer-list>

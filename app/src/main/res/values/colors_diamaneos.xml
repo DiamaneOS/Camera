@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- DiamaneOS: Tally colours. The system palette takes over in values-v31 and values-v34. -->
+<resources>
+    <!-- The lamp (what is on) and the ink on it. Sodium, for phones without dynamic colour. -->
+    <color name="tally_lamp">#FBA700</color>
+    <color name="tally_on_lamp">#2A1800</color>
+</resources>

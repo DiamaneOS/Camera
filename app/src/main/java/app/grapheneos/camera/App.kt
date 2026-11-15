@@ -13,6 +13,7 @@ import android.view.WindowManager
 import androidx.annotation.RequiresPermission
 import androidx.appcompat.app.AppCompatActivity
 import app.grapheneos.camera.capturer.deleteStalePendingRecordings
+import app.grapheneos.camera.ui.TallyTheme
 import app.grapheneos.camera.ui.activities.MainActivity
 import com.google.android.material.color.DynamicColors
 import java.util.concurrent.TimeUnit
@@ -91,7 +92,7 @@ class App : Application() {
         if (BuildConfig.DEBUG) StartupDiagnostics.startIfRequested(this)
         app.grapheneos.camera.capturer.PhotoProcessingQueue.initialize(this)
         registerActivityLifecycleCallbacks(activityLifeCycleHelper)
-        DynamicColors.applyToActivitiesIfAvailable(this)
+        DynamicColors.applyToActivitiesIfAvailable(this, TallyTheme.options)
 
         thread {
             deleteStalePendingRecordings(this)

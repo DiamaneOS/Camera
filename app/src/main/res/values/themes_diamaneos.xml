@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- DiamaneOS: the Tally look, laid over Material's dynamic colours by TallyTheme (App.kt).
+     Kept in its own files so GrapheneOS's layouts and themes stay as they are. -->
+<resources>
+    <!-- Every activity: modern drop-down fields and menus. -->
+    <style name="ThemeOverlay.Camera.Tally" parent="">
+        <item name="android:spinnerStyle">@style/Widget.Camera.Tally.Spinner</item>
+        <item name="android:spinnerItemStyle">@style/Widget.Camera.Tally.SpinnerItem</item>
+        <item name="android:spinnerDropDownItemStyle">@style/Widget.Camera.Tally.DropDownItem</item>
+        <!-- AppCompat's spinners (the settings sheet inflates them) read their own attributes. -->
+        <item name="spinnerDropDownItemStyle">@style/Widget.Camera.Tally.DropDownItem</item>
+        <item name="dropdownListPreferredItemHeight">48dp</item>
+    </style>
+
+    <!-- The viewfinder screens: what is on is drawn in the lamp colour, as in the rest of the system. -->
+    <style name="ThemeOverlay.Camera.Tally.Viewfinder">
+        <item name="colorPrimary">@color/tally_lamp</item>
+        <item name="colorOnPrimary">@color/tally_on_lamp</item>
+    </style>
+
+    <style name="Widget.Camera.Tally.Spinner" parent="@android:style/Widget.Material.Spinner">
+        <item name="android:background">@drawable/tally_spinner_field</item>
+        <item name="android:popupBackground">@drawable/tally_menu_background</item>
+        <item name="android:popupElevation">3dp</item>
+        <!-- Fields at least 160 dp wide, and the menu exactly under its field, as wide as it. -->
+        <item name="android:minWidth">160dp</item>
+        <item name="android:dropDownWidth">match_parent</item>
+    </style>
+
+    <style name="Widget.Camera.Tally.SpinnerItem" parent="@android:style/Widget.Material.TextView.SpinnerItem">
+        <item name="android:textAppearance">@style/TextAppearance.Material3.BodyLarge</item>
+        <item name="android:textColor">?attr/colorOnSurface</item>
+        <!-- Room for the chevron and a 40 dp field, also where GrapheneOS's layout sets the padding to 0. -->
+        <item name="android:paddingStart">12dp</item>
+        <item name="android:paddingEnd">40dp</item>
+        <item name="android:minHeight">40dp</item>
+        <item name="android:gravity">center_vertical</item>
+    </style>
+
+    <style name="Widget.Camera.Tally.DropDownItem" parent="@android:style/Widget.Material.DropDownItem.Spinner">
+        <item name="android:textAppearance">@style/TextAppearance.Material3.BodyLarge</item>
+        <item name="android:textColor">?attr/colorOnSurface</item>
+        <item name="android:paddingStart">12dp</item>
+        <item name="android:paddingEnd">12dp</item>
+        <!-- The chosen entry's lamp: rows are checked (CheckedTextView) or activated (TextView). -->
+        <item name="android:checkMark">@null</item>
+        <item name="android:drawableEnd">@drawable/tally_menu_check</item>
+        <item name="android:drawablePadding">8dp</item>
+    </style>
+
+</resources>

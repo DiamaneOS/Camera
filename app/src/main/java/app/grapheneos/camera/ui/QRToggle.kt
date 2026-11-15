@@ -24,11 +24,7 @@ class QRToggle @JvmOverloads constructor(
     }
 
     private fun refreshToggleUI() {
-        alpha = if (isSelected) {
-            selectedAlpha
-        } else {
-            deselectedAlpha
-        }
+        TallyTheme.styleQrToggle(this, isSelected) // DiamaneOS: lit when chosen instead of faded when not
     }
 
     override fun setSelected(selected: Boolean) {
