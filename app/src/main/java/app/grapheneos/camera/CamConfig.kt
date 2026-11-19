@@ -1486,6 +1486,59 @@ class CamConfig(private val mActivity: MainActivity) {
             }
         }
 
+    private fun photoResolutionInfo()=try {cameraProvider?.getCameraInfo(cameraSelector)} catch(_:IllegalArgumentException) {null}
+    private fun photoResolutionKey():String? = photoResolutionInfo()?.let {
+        "photo_resolution_"+Camera2CameraInfo.from(it).cameraId+"_"+aspectRatio
+    }
+    val canSelectPhotoResolution:Boolean get()=currentMode==CameraMode.CAMERA && !isVideoMode &&
+        activePhotoOutputFormat==PhotoOutputFormat.JPEG && !softwarePhoto
+    internal fun photoResolutions():List<app.grapheneos.camera.capturer.PhotoResolution> {
+        val info=photoResolutionInfo() ?: return emptyList()
+        val map=Camera2CameraInfo.from(info).getCameraCharacteristic(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP) ?: return emptyList()
+        val sizes=(map.getOutputSizes(android.graphics.ImageFormat.JPEG)?.toList().orEmpty()+
+            map.getHighResolutionOutputSizes(android.graphics.ImageFormat.JPEG)?.toList().orEmpty())
+            .mapNotNull {try {app.grapheneos.camera.capturer.PhotoResolution(it.width,it.height)} catch(_:IllegalArgumentException) {null}}
+            .filter { !usesProcessingCapture || app.grapheneos.camera.capturer.ProcessingGeometry.supported(it.width,it.height) }
+        return app.grapheneos.camera.capturer.PhotoResolutionPolicy.advertised(sizes,
+            if(aspectRatio==AspectRatio.RATIO_16_9)16.0/9 else 4.0/3)
+    }
+    /**
+     * DiamaneOS: the full sensor resolution as a menu choice (such as 50 MP), where the bound
+     * camera has one in the chosen aspect ratio. It is only ever chosen in the menu, never as the highest size.
+     */
+    internal fun fullResolutionPhoto():app.grapheneos.camera.capturer.PhotoResolution? {
+        if(usesProcessingCapture)return null
+        val size=fullResolutionStill()?.second ?: return null
+        val aspect=if(aspectRatio==AspectRatio.RATIO_16_9)16.0/9 else 4.0/3
+        if(kotlin.math.abs(maxOf(size.width,size.height).toDouble()/minOf(size.width,size.height)-aspect)>=.02)return null
+        return try {app.grapheneos.camera.capturer.PhotoResolution(size.width,size.height)} catch(_:IllegalArgumentException) {null}
+    }
+    /** DiamaneOS: the bound camera's id and full sensor size, where it has one. */
+    internal fun fullResolutionStill():Pair<String,Size>? {
+        val id=photoResolutionInfo()?.let {Camera2CameraInfo.from(it).cameraId} ?: return null
+        val manager=mActivity.getSystemService(android.hardware.camera2.CameraManager::class.java)
+        // A logical camera (on some devices the back camera) has the capability on its main sensor, which the app
+        // binds as a camera of its own at 1x.
+        return try {
+            val characteristics=manager.getCameraCharacteristics(id)
+            val main=rawLenses().filter {it.label==R.string.lens_main}.map {it.id}
+            (listOf(id)+characteristics.physicalCameraIds+main).distinct().firstNotNullOfOrNull {camera->
+                app.grapheneos.camera.capturer.MaxResolutionStill.sensorSize(manager.getCameraCharacteristics(camera))?.let {camera to it}
+            }
+        } catch(_:Exception) {null}
+    }
+    internal var photoResolution:app.grapheneos.camera.capturer.PhotoResolution?
+        get() {
+            val key=photoResolutionKey() ?: return null;val stored=commonPref.getString(key,null)
+            val sizes=photoResolutions()
+            if(stored==null && selectHighestResolution)return sizes.firstOrNull()
+            return app.grapheneos.camera.capturer.PhotoResolution.parse(stored)?.takeIf {it in sizes || it==fullResolutionPhoto()}
+        }
+        set(value) {
+            require(value==null || value in photoResolutions() || value==fullResolutionPhoto())
+            photoResolutionKey()?.let {key->commonPref.edit {putString(key,value?.preference ?: "auto")}}
+        }
+
     fun migrateFromLegacyPhotoQuality() {
         // If emphasis on quality/optimization was previously set by the user
         if (commonPref.contains(SettingValues.Key.EMPHASIS_ON_QUALITY)) {
