@@ -12,7 +12,7 @@ android {
     compileSdk=37;buildToolsVersion="37.0.0";ndkVersion="29.0.14206865"
     defaultConfig {
         applicationId="de.diamaneos.camera.processor";minSdk=33;targetSdk=37
-        versionCode=2;versionName="2"
+        versionCode=3;versionName="3"
         externalNativeBuild.ndkBuild {arguments+=listOf("APP_STL=c++_static","APP_OPTIM=release")}
     }
     buildTypes {
