@@ -198,8 +198,10 @@ android {
         buildConfigField("String","PORTRAIT_PROCESSOR_PACKAGE","\"de.diamaneos.camera.processor\"")
         minSdk = 29
         targetSdk = 37
-        versionCode = 94
-        versionName = versionCode.toString()
+        // DiamaneOS: upstream version x 100 + DiamaneOS revision (94.1 = 9401). Always higher than
+        // upstream's own numbers and only ever rising, as Android refuses a lower version as an update.
+        versionCode = 9401
+        versionName = "94.1"
 
         buildConfigField("boolean", "CAMERA_NEURAL_DENOISE_TEST", "false")
         buildConfigField("boolean", "CAMERA_JPEG_BURST_EVALUATION",
